@@ -5,6 +5,9 @@ using ProgressMeter
 using LinearAlgebra
 using Random
 
-greet() = print("Hello World!")
+include("MLTrain.jl")
+include("ReadFile.jl")
+
+export create_model,train_model!
 
 end

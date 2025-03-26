@@ -241,34 +241,3 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int)
 
     return nn_input
 end
-
-"""
-    MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32)
-
-Creates and initializes a `MyLayer` struct with random weights for the "eta" and "Fs" connections, 
-and given `cutoff` radius and atomic `charge`. The weights are initialized using a uniform distribution 
-with specified ranges.
-
-#### Arguments:
-- `input_dim::Int`: The number of input neurons.
-- `hidden_dim::Int`: The number of hidden neurons.
-- `cutoff::Float32`: The cutoff radius for the layer.
-- `charge::Float32`: The atomic charge associated with the layer.
-
-#### Returns:
-- `MyLayer`: A `MyLayer` object initialized with random weights for the "eta" and "Fs" connections, 
-  along with the provided `cutoff` and `charge`.
-
-#### Example:
-```julia
-layer = MyLayer(10, 5, 1.0f0, 2.0f0)
-"""
-
-function MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32)
-    # Initialize the weights for "eta" and "Fs" using random values from a uniform distribution
-    W_eta = Float32.(rand(Uniform(0.25, 2.5), hidden_dim, input_dim))  # Weights for "eta"
-    W_Fs = Float32.(rand(Uniform(0.0, 2.5), hidden_dim, input_dim))    # Weights for "Fs"
-    
-    # Return an instance of the MyLayer struct with initialized weights and given cutoff and charge
-    return MyLayer(W_eta, W_Fs, cutoff, charge)
-end

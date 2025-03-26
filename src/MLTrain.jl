@@ -82,7 +82,7 @@ println(output)
 
 function (layer::MyLayer)(x)
     N_neighboring_atoms = size(x)[1]  # Number of neighboring atoms (assuming x represents atom positions or other data)
-    sum = zeros(size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
+    sum = zeros(FLoat32, size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
 
     # Iterate over each neighboring atom
     for j in 1:N_neighboring_atoms
@@ -91,7 +91,7 @@ function (layer::MyLayer)(x)
     end
 
     # Return the result as a Float32 array
-    return Float32.(sum)
+    return sum
 end
 
 """

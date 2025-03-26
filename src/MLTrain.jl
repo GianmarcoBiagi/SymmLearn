@@ -282,7 +282,7 @@ function loss_function(
     element_charge::Dict{String, Float64} ) 
 
 
-    total_loss = 0.0,
+    total_loss = 0.0
     num_structures = size(data, 1) # Number of structures
     for k in 1:num_structures  # Loop over structures
         predicted_energy = 0.0f0

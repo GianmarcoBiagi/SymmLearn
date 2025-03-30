@@ -1,168 +1,93 @@
+using ExtXYZ
+
 """
-    process_dataset(file_path::AbstractString, N::Int) -> Tuple{Vector{Vector{Float32}}, Vector{Vector{Vector{Float32}}}, Vector{Float32}}
+    extract_data(path::String)
 
-Processes a dataset from a file in .xyz format by extracting lattice vectors, energies, and atomic data for each structure. 
-The function organizes the data into three parts: lattice vectors, atomic datasets, and energy values. The sections in the file are now identified by the number `N` provided as input, instead of the previous static value `40`.
+### Description:
+This function extracts key information from a dataset of atomic configurations stored in a file ina xyz format . It reads the frames (or configurations) using ExtXYZ, and for each configuration, it extracts:
+- The number of atoms
+- The unique species of atoms
+- The positions and forces acting on each atom
+- The cell matrix (i.e., the box or lattice dimensions)
+- The total energy of the configuration
 
-### Arguments
-- `file_path::AbstractString`: The path to the dataset file to be processed.
-- `N::Int`: In practice it's the number of atoms in the cell, this number is used to identify the start of a new dataset section. When this number is found, the current dataset is saved and a new one is started.
+The function returns this data in a structured format for further analysis.
 
-### Returns
-- `Tuple{Vector{Vector{Float32}}, Vector{Vector{Vector{Float32}}}, Vector{Float32}}`: A tuple containing:
-  1. `all_lattice`: A vector of lattice vectors (each a `Vector{Float32}`) for all structures in the dataset.
-  2. `dataset`: A vector of datasets, where each dataset corresponds to a structure and contains atomic information (charge, coordinates, and forces).
-  3. `all_energies`: A vector of energy values (each a `Float32`) for all structures.
+### Arguments:
+- `path::String`: The path to the file containing the frame data. The file should contain the necessary details about multiple configurations, including atomic positions, species, forces, and energy.
 
-### Example
+### Returns:
+A tuple containing the following elements:
+1. `atoms_in_a_cell::Int`: The number of atoms in a single unit cell (assumed to be the same in all the frames).
+2. `species::Vector{String}`: A vector containing the unique species (elements) present in the system.
+3. `all_cells::Array{Float32, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
+4. `dataset::Array{Float32, 3}`: A 3D array with the following data for each configuration:
+   - Row 1: Atomic charges (mapped from species)
+   - Rows 2-4: Atomic positions (x, y, z)
+   - Rows 5-7: Forces acting on atoms (fx, fy, fz)
+5. `all_energies::Vector{Float32}`: A vector containing the total energy for each configuration.
+
+### Functionality:
+1. **Reading the data**: The function first reads the data from the provided path using `read_frames(path)`.
+2. **Extracting number of configurations**: It calculates the total number of configurations by checking the size of the data.
+3. **Pre-allocating arrays**: The function allocates memory for arrays to store the energies, cell matrices, atomic data, and forces for each configuration.
+4. **Species extraction**: It extracts the unique species (elements) used in the configurations and stores them in the `species` array.
+5. **Data extraction**:
+   - The function extracts the cell matrices for each configuration.
+   - It also extracts the total energy for each configuration.
+   - The dataset is populated with atomic charges, positions, and forces for each atom in each configuration.
+6. **Returning the data**: After all data has been extracted and stored in the arrays, the function returns the extracted data as a tuple.
+
+### Example Usage:
 ```julia
-# Example usage:
-file_path = "data.txt"
-N = 40  # Specify the number of atoms in the cell
-lattice_vectors, datasets, energies = process_dataset(file_path, N)
-println(lattice_vectors)
-println(datasets)
-println(energies)
-
+atoms_in_a_cell, species, all_cells, dataset, all_energies = extract_data("path/to/data.xyz")
 """
 
-function process_dataset(file_path::AbstractString, N::Int)
-    # Initialize containers for the processed dataset
-    dataset = []  # Holds all processed datasets
-    current_dataset = []  # Current dataset for the current structure
-    all_lattice = []  # Lattice vectors for all structures
-    all_energies = []  # Energies for all structures
+function extract_data(path::String)
 
-    open(file_path, "r") do file
-        while !eof(file)
-            line = readline(file) |> strip  # Remove whitespace from the line
+    # Read the frame data from the provided file path
+    frame = read_frames(path)
 
-            if line == string(N)
-                # If the value N is found, save the current dataset and initialize a new one
-                if !isempty(current_dataset)
-                    push!(dataset, current_dataset)
-                end
-                current_dataset = []  # Reset current dataset
-            elseif startswith(line, "pbc=")
-                # Extract lattice vectors from the corresponding line
-                lattice_line = split(line, "Lattice=")[2]
-                lattice_data = extract_lattice_vector(lattice_line)
-                energy = extract_energy(lattice_line)
-                push!(all_lattice, Float32.(lattice_data))  # Ensure lattice data is of type Float32
-                push!(all_energies, Float32(energy))  # Convert energy to Float32
-            else
-                # Split the line into parts and analyze coordinates and forces
-                parts = split(line)
-                if length(parts) < 7
-                    continue  # Skip if the data is incomplete
-                end
-                element = parts[1]
+    # Get the number of configurations (i.e., the number of frames in the data)
+    n_of_configs = size(frame)[1]
+        
+    # Get the number of atoms in a cell (from the first frame)
+    atoms_in_a_cell = frame[1]["N_atoms"]
 
-                # Extract and convert coordinates and forces to Float32
-                coordinates = Float32.(parse.(Float32, parts[2:4]))  
-                forces = Float32.(parse.(Float32, parts[5:7]))  
-                charge = Float32(get(element_charge, element, 0.0))  # Get element charge and convert to Float32
-                
-                # Add to the current dataset: charge, coordinates, and forces
-                push!(current_dataset, [charge, coordinates..., forces...])
-            end
+    # Pre-allocate the arrays to store the extracted data
+    all_energies = zeros(Float32, n_of_configs)  # Array to store energies of each configuration
+    all_cells = zeros(Float32, 3, 3, n_of_configs)  # Array to store cell matrix for each configuration
+    dataset = zeros(Float32, 7, atoms_in_a_cell, n_of_configs)  # 3D dataset to store atomic information for each configuration
+
+
+    # Extract the unique species (elements) used in the system by removing duplicates from the species list
+    unique_species = Set(frame[1]["arrays"]["species"])  # Convert species to a set to remove duplicates
+    species = collect(unique_species)  # Convert the set back into an array (optional, if you need it as an array)
+
+    # Extract cell matrices for each configuration
+    all_cells = [frame[i]["cell"] for i in 1:n_of_configs]
+
+    # Extract energy values for each configuration
+    all_energies = [frame[i]["info"]["energy"] for i in 1:n_of_configs]
+    
+    
+    # Extract atom-specific data (charge, position, and forces) for each configuration
+    for i in 1:n_of_configs
+        for j in 1:atoms_in_a_cell
+  
+            # Store charge (mapped from species)
+            dataset[1, j, i] = element_to_charge[frame[i]["arrays"]["species"][j]]
+
+            # Store atomic positions (first 3 elements: x, y, z)
+            dataset[2:4, j, i] = frame[i]["arrays"]["pos"][1:3, j]
+
+            # Store forces (first 3 components: fx, fy, fz)
+            dataset[5:7, j, i] = frame[i]["arrays"]["forces"][1:3, j]
         end
-        
-        # Add the last dataset if not empty
-        if !isempty(current_dataset)
-            push!(dataset, current_dataset)
-        end
     end
 
-    # Return the processed lattice vectors, datasets, and energies
-    return all_lattice, dataset, all_energies
-end
-
-
-
-
-"""
-    extract_lattice_vector(lattice_str::AbstractString) -> Vector{Float32}
-
-Extracts the first three non-zero numerical values from a string representing a lattice vector. 
-The string is expected to be in .xyz format
-
-### Arguments
-- `lattice_str::AbstractString`: A string representing a lattice vector, containing numeric values (e.g., "1.0 0.0 3.5 4.2").
-
-### Returns
-- `Vector{Float32}`: A vector containing the first three non-zero lattice values, converted to `Float32`. If fewer than three non-zero values are found, an empty array is returned.
-
-### Example
-```julia
-# Example usage:
-lattice_str = " pbc="T T T" Lattice=" 2.5 0.0 0.0 0.0 12.8 0.0 0.0 0.0 1.5" "
-lattice_vector = extract_lattice_vector(lattice_str)
-println(lattice_vector)  # Output: [2.5, 12.8, 1.5]
-
-# If fewer than three non-zero values are found:
-lattice_str = "0.0 0.0 0.0"
-lattice_vector = extract_lattice_vector(lattice_str)
-println(lattice_vector)  # Output: Float32[]
-"""
-# Function to extract the first 3 non-zero numbers from a lattice string
-function extract_lattice_vector(lattice_str::AbstractString)
-    # Extract numbers from the string, ignoring anything except digits and periods
-    filtered = filter(x -> !isempty(x) && parse(Float64, x) != 0.0, 
-                      split(replace(lattice_str, r"[^\d.\s]" => "")))
-
-    # Check if there are at least 3 non-zero values
-    if length(filtered) < 3
-        println("Warning: Less than 3 non-zero lattice values found.")
-        return Float32[]  # Return an empty Float32 array if fewer than 3 values
-    end
-
-    # Return the first 3 non-zero numbers converted to Float32
-    return parse.(Float32, filtered[1:3])
-end
-
-
-"""
-    extract_energy(line::AbstractString) -> Float32
-
-Extracts the energy value from a string that contains the substring `"energy="`, followed by a floating-point number. 
-The function assumes that the energy value is numeric and is the first value after `"energy="`.
-
-### Arguments
-- `line::AbstractString`: A string that contains the energy value in the format `energy=<value>`. 
-  For example, `"energy=-28880.2597722246136982"`.
-
-### Returns
-- `Float32`: The extracted energy value as a `Float32`. 
-
-### Example
-```julia
-# Example usage:
-line = "energy=-28880.2597722246136982"
-energy_value = extract_energy(line)
-println(energy_value)  # Output: -28880.26
-"""
-
-function extract_energy(line::AbstractString)
-    # Check if the string contains "energy="
-    if occursin("energy=", line)
-        # Split the string at "energy="
-        parts = split(line, "energy=")
-        # Get the part after "energy="
-        energy_str = parts[2]
-        
-        # Find the first non-numeric character (indicating the end of the number)
-        # The condition checks for digits, decimal points, and negative signs
-        end_idx = findfirst(c -> !isdigit(c) && c != '.' && c != '-', energy_str) - 1
-        
-        # Extract the number as a substring and convert it to Float32
-        energy_value = parse(Float32, energy_str[1:end_idx])  # Convert to Float32
-        
-        return energy_value
-    else
-        # If "energy=" is not found, raise an error
-        error("The string does not contain 'energy='")
-    end
+    # Return the extracted data: number of atoms, species, cell matrices, dataset, and energies
+    return atoms_in_a_cell, species, all_cells, dataset, all_energies
 end
 
 
@@ -196,26 +121,24 @@ println(nn_input)
 """
 
 # Function to create the neural network input array
-function create_nn_input(dataset, all_lattice, num_atoms::Int)
-    num_datasets = length(dataset)
+function create_nn_input(dataset, all_lattice, num_atoms::Int32)
+    num_datasets = size(dataset)[3]
+
 
     # Input array shape: (num_datasets, num_atoms, num_atoms) of type Float32
     nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, num_atoms)
 
     for i in 1:num_datasets
-        current_dataset = dataset[i]
-        lattice_vectors = all_lattice[i]
+        current_dataset = dataset[:,:,i]
+        lattice_vectors = all_lattice[i,:]
 
         for j in 1:num_atoms
-            atom_j = current_dataset[j]
+            atom_j = current_dataset[:,j]
             charge_j = atom_j[1]  # Ensure charge is a scalar value
             pos_j = atom_j[2:4]
-
             # Insert the atom charge into the first slot
-            nn_input[i, j, 1] = Float32(charge_j)
+            nn_input[i, j, 1] = charge_j
 
-            # Convert positions to Float32
-            pos_j_float = Float32.(pos_j)
 
             # Calculate the distance to other atoms
             slot_index = 2  # Start from the second slot
@@ -223,17 +146,13 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int)
                 if j == k
                     continue  # Skip distance to itself
                 end
-                atom_k = current_dataset[k]
+                atom_k = current_dataset[:,k]
                 pos_k = atom_k[2:4]
 
-                # Convert positions to Float32
-                pos_k_float = Float32.(pos_k)
-
                 # Calculate the distance with PBC
-                distance = distance_with_pbc(pos_j_float, pos_k_float, lattice_vectors)
+                distance = distance_with_pbc(pos_j, pos_k, lattice_vectors[1])
 
-                # Ensure the distance is of type Float32
-                nn_input[i, j, slot_index] = Float32(distance)
+                nn_input[i, j, slot_index] = distance
                 slot_index += 1  # Move to the next slot
             end
         end

@@ -1,3 +1,8 @@
+using Flux
+using Random
+using ProgressMeter
+using Statistics
+
 """
     struct MyLayer
 
@@ -51,8 +56,8 @@ cutoff radius, and atomic charge. The layer is initialized with random weights f
 """
 function MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32)
     # Initialize weights for eta and Fs with random values
-    W_eta = Float32.(rand(Uniform(0.25, 2.5), hidden_dim, input_dim))  # Initialize eta weights (Float32)
-    W_Fs = Float32.(rand(Uniform(0.0, 2.5), hidden_dim, input_dim))    # Initialize Fs weights (Float32)
+    W_eta = Float32.(0.25.+2.25.*rand(hidden_dim, input_dim))  # Initialize eta weights (Float32)
+    W_Fs = Float32.(0.25.+2.25.*rand(hidden_dim, input_dim))    # Initialize Fs weights (Float32)
 
     # Create and return the MyLayer instance
     return MyLayer(W_eta, W_Fs, cutoff, charge)
@@ -82,7 +87,7 @@ println(output)
 
 function (layer::MyLayer)(x)
     N_neighboring_atoms = size(x)[1]  # Number of neighboring atoms (assuming x represents atom positions or other data)
-    sum = zeros(FLoat32, size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
+    sum = zeros(Float32, size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
 
     # Iterate over each neighboring atom
     for j in 1:N_neighboring_atoms
@@ -119,6 +124,64 @@ function Base.show(io::IO, layer::MyLayer)
 end
 
 """
+    partition(data,parts;shuffle,dims,rng)
+
+Partition (by rows) one or more matrices according to the shares in `parts`.
+
+# Parameters
+* `data`: A matrix/vector or a vector of matrices/vectors
+* `parts`: A vector of the required shares (must sum to 1)
+* `shufle`: Whether to randomly shuffle the matrices (preserving the relative order between matrices)
+* `dims`: The dimension for which to partition [def: `1`]
+* `copy`: Wheter to _copy_ the actual data or only create a reference [def: `true`]
+* `rng`: Random Number Generator (see [`FIXEDSEED`](@ref)) [deafult: `Random.GLOBAL_RNG`]
+
+# Notes:
+* The sum of parts must be equal to 1
+* The number of elements in the specified dimension must be the same for all the arrays in `data`
+
+# Example:
+```julia
+julia> x = [1:10 11:20]
+julia> y = collect(31:40)
+julia> ((xtrain,xtest),(ytrain,ytest)) = partition([x,y],[0.7,0.3])
+ ```
+ """
+function partition(data::AbstractArray{T,1},parts::AbstractArray{Float64,1};shuffle=true,dims=1,copy=true,rng = Random.GLOBAL_RNG) where T <: AbstractArray
+        # the sets of vector/matrices
+        N = size(data[1],dims)
+        all(size.(data,dims) .== N) || @error "All matrices passed to `partition` must have the same number of elements for the required dimension"
+        ridx = shuffle ? Random.shuffle(rng,1:N) : collect(1:N)
+        return partition.(data,Ref(parts);shuffle=shuffle,dims=dims,fixed_ridx = ridx,copy=copy,rng=rng)
+end
+
+function partition(data::AbstractArray{T,Ndims}, parts::AbstractArray{Float64,1};shuffle=true,dims=1,fixed_ridx=Int64[],copy=true,rng = Random.GLOBAL_RNG) where {T,Ndims}
+    # the individual vector/matrix
+    N        = size(data,dims)
+    nParts   = size(parts)
+    toReturn = toReturn = Array{AbstractArray{T,Ndims},1}(undef,nParts)
+    if !(sum(parts) ≈ 1)
+        @error "The sum of `parts` in `partition` should total to 1."
+    end
+    ridx = fixed_ridx
+    if (isempty(ridx))
+       ridx = shuffle ? Random.shuffle(rng, 1:N) : collect(1:N)
+    end
+    allDimIdx = convert(Vector{Union{UnitRange{Int64},Vector{Int64}}},[1:i for i in size(data)])
+    current = 1
+    cumPart = 0.0
+    for (i,p) in enumerate(parts)
+        cumPart += parts[i]
+        final = i == nParts ? N : Int64(round(cumPart*N))
+        allDimIdx[dims] = ridx[current:final]
+        toReturn[i]     = copy ? data[allDimIdx...] : @views data[allDimIdx...]
+        current         = (final +=1)
+    end
+    return toReturn
+end
+
+
+"""
     data_preprocess(input_data, output_data; split=[0.7, 0.3], verbose=false)
 
 Preprocesses the data by splitting it into training, validation, and test sets and applying Z-score normalization.
@@ -137,16 +200,12 @@ A tuple containing:
 - `y_mean`: Mean of training data (for denormalization).
 - `y_std`: Standard deviation of training data (for denormalization).
 """
-function data_preprocess(input_data, output_data; split=[0.7, 0.3]::Vector{Float64}, verbose=false)
-    # Ensure the split ratios sum to 1
-    if sum(split) != 1
-        error("Error: The train-test split ratio is incorrect. The sum must be equal to 1, but got $(sum(split)).")
-    end
+function data_preprocess(input_data, target; split=[0.7, 0.3]::Vector{Float64}, verbose=false)
+
 
     # Partitioning the dataset
-    ((x_train, tempX), (y_train, tempY)) = partition([input_data, output_data], [0.7, 0.3])
+    ((x_train, tempX), (y_train, tempY)) = partition([input_data, target], split)
     ((x_val, x_test), (y_val, y_test)) = partition([tempX, tempY], [0.5, 0.5])
-
 
     # Ensure y_train, y_val, and y_test are Float32
     y_train = Float32.(y_train)
@@ -186,14 +245,14 @@ function data_preprocess(input_data, output_data; split=[0.7, 0.3]::Vector{Float
 end
 
 """
-    create_model(ions::Vector{String}, R_cutoff::Float64, G1_number::Int = 5, verbose::Bool = false) -> Dict{String, Chain}
+    create_model(ions::Vector{String}, R_cutoff::Float32, G1_number::Int = 5, verbose::Bool = false) -> Dict{String, Chain}
 
 Creates a set of neural network models, one for each ion in the input list, using the specified cutoff radius and 
 number of input features. The models are stored in a dictionary where the keys follow the format `"ion_model"`.
 
 ### Arguments
 - `ions::Vector{String}`: List of ion symbols for which models will be created.
-- `R_cutoff::Float64`: Cutoff radius used in the `MyLayer` layer.
+- `R_cutoff::Float32`: Cutoff radius used in the `MyLayer` layer.
 - `G1_number::Int = 5`: Number of input features in the first layer (default = 5).
 - `verbose::Bool = false`: If `true`, prints the model structures after creation.
 
@@ -207,54 +266,65 @@ models = create_model(["Li", "Na", "K"], 6.5, 8, verbose=true)
 
 function create_model(
     ions::Vector{String}, 
-    R_cutoff::Float64, 
+    R_cutoff::Float32, 
     G1_number::Int = 5, 
     verbose::Bool = false
 )
     # Get ion charges using element_charge dictionary
-    ion_charges = 0.1 * getindex.(Ref(element_charge), ions)
+    ion_charges = 0.1f0 * getindex.(Ref(element_to_charge), ions)
 
     # Number of ions
     n_of_ions = length(ions)
 
-    # Dictionary to store models
-    models = Dict{String, Any}()
+    # Create an array of tuples to store models: [name, model]
+    models = Vector{Tuple{Symbol, Chain}}(undef, n_of_ions)
 
-    # Create a neural network model for each ion
+    # Create a neural network model for each ion and assign to the array
     for i in 1:n_of_ions
-        models["$(ions[i])_model"] = Chain(
+        ion_name = ions[i]
+        
+        # Create the model
+        model = Chain(
             MyLayer(1, G1_number, R_cutoff, ion_charges[i]),
             Dense(G1_number, 15, tanh),
             Dense(15, 10, tanh),
             Dense(10, 5, tanh),
             Dense(5, 1)
         )
+        
+        # Assign the name and model to the array at the ith position
+        models[i] = (Symbol("$(ion_name)_model"), model)
     end
 
     # Print model details if verbose is enabled
     if verbose
         for (name, model) in models
-            println("Model: ", name)
+            println("A model has been created called: ", name)
             println(model)
             println("────────────────────────────────")
         end
     end
 
-    return models  # Return the dictionary of models
+    # Convert models array into an immutable Tuple
+    models_final = Tuple(models)
+
+    return models_final  # Return the immutable Tuple of models
 end
 
+
 """
-    loss_function(data, energies, models)
+    loss_function(models, data, energies)
 
 Computes the mean squared error (MSE) loss between predicted and reference total energies.
 
 # Arguments
+- `models::Vector{Tuple{Symbol, Chain}}`: A tuple mapping ion names (e.g., `"Cs"`, `"Pb"`, `"I"`) to their neural network models.
 - `data::Array`: A 3D array where:
     - The first dimension represents different structures.
     - The second dimension represents atoms within a structure.
     - The third dimension contains atomic charge (index 1) and features (index 2 to end).
 - `energies::Vector{Float64}`: A 1D array of reference total energies for each structure.
-- `models::Dict{String, Any}`: A dictionary mapping ion names (e.g., `"Cs"`, `"Pb"`, `"I"`) to their neural network models.
+
 
 # Returns
 - `Float64`: The mean squared error (MSE) between predicted and reference energies.
@@ -275,38 +345,47 @@ energies = rand(10)     # Example reference energies
 loss = loss_function(data, energies, models)
 println("Loss: ", loss)
 """
-function loss_function( 
-    data::Array{Float32,3}, 
-    energies::Vector{Float32}, 
-    models::Dict{String, Chain}, 
-    element_charge::Dict{String, Float64} ) 
-
-
+function loss_function(
+    models,  # Tuple mapping element names to ML models
+    data::Array{Float32,3},       # Data: (structures, atoms, features)
+    energies::Vector{Float32}     # Reference total energies
+) 
     total_loss = 0.0
-    num_structures = size(data, 1) # Number of structures
-    for k in 1:num_structures  # Loop over structures
-        predicted_energy = 0.0f0
-        num_atoms = size(data, 2)  # Number of atoms per structure
+    n_structures = size(data)[1]
+    
+    n_of_ions=size(models,1)[1]
+    
 
-        for i in 1:num_atoms  # Loop over atoms
-            charge = data[k, i, 1]  # Atomic charge
-          features = data[k, i, 2:end]  # Feature vector
+    for k in 1:n_structures # ciclo sui dataset
+        temp = 0.0
+        n_atoms = size(data)[2] # numero di atomi
+    
+        for i in 1:n_atoms # ciclo sugli atomi del dataset
+            charge = data[k, i, 1]
+            features = data[k, i, 2:40]
 
-         # Find corresponding ion name based on charge
-         ion_name = findfirst(x -> isapprox(element_charge[x] * 0.1, charge; atol=1e-3), keys(element_charge))
+            ion_name=charge_to_element[charge]
 
-         # If the ion is found and exists in the model dictionary, use it
-         if ion_name !== nothing && haskey(models, "$(ion_name)_model")
-             predicted_energy += models["$(ion_name)_model"](features)[1]
-         end
+            for i in 1:n_of_ions
+
+               if "$(ion_name)_model" == String(models[i][1])
+                temp += models[i][2](features)[1]
+               end
+            end
+            
         end
-
-        # Accumulate squared error
-        total_loss += abs2(predicted_energy - energies[k])
+    
+    total_loss += abs2(temp - energies[k])
     end
+    println("Per ora il codice si ferma qui dato che non riesco a risolvere la questione degli array mutabili")
+    exit()
+    return total_loss / n_structures # Media della perdita
+    end 
 
-    return total_loss / num_structures  # Mean squared error (MSE)
-end
+
+
+
+
 
 """
     train_model!(models, x_train, y_train, x_val, y_val, loss_function; 
@@ -316,7 +395,7 @@ end
 Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
-- `models::Dict{String, Chain}`: Dictionary mapping ion names to their neural network models.
+- `models::Tuple{Tuple{Symbol, Chain}}}`: A Tuple mapping ion names to their neural network models.
 - `x_train::Array{Float32,3}`: Training data (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
 - `x_val::Array{Float32,3}`: Validation data (same shape as `x_train`).
@@ -334,7 +413,7 @@ Trains a set of neural network models for predicting atomic energies.
 - `Dict{String, Chain}`: The trained models.
 """
 function train_model!(
-    models::Dict{String, Chain},
+    models,
     x_train::Array{Float32,3}, 
     y_train::Vector{Float32}, 
     x_val::Array{Float32,3}, 
@@ -344,7 +423,7 @@ function train_model!(
     epochs=3000, batch_size=32, verbose=true
 )
     # Initialize optimizer
-    opt = Flux.Adam(initial_lr)
+    opt_state = Flux.setup(Adam(initial_lr), models)
 
     # Store best models and best loss
     best_epoch = 0
@@ -363,12 +442,12 @@ function train_model!(
             y_batch = y_train[i:end_index]
             
             # Training step
-            Flux.train!(loss_function, Flux.params(values(models)...), [(x_batch, y_batch)], opt)
+            Flux.train!(loss_function, models, [(x_batch, y_batch)], opt_state)
         end
 
         # Compute losses
-        loss_train[epoch] = loss_function(x_train, y_train, models)
-        loss_val[epoch] = loss_function(x_val, y_val, models)
+        loss_train[epoch] = loss_function(models, x_train, y_train,)
+        loss_val[epoch] = loss_function(models, x_val, y_val)
 
         # Save best model
         if loss_val[epoch] < best_loss * 0.95
@@ -394,8 +473,8 @@ function train_model!(
 
 
     if verbose
-        println("Final Training Loss: $(loss_function(x_train, y_train, models))")
-        println("Final Validation Loss: $(loss_function(x_val, y_val, models))")
+        println("Final Training Loss: $(loss_function(models, x_train, y_train))")
+        println("Final Validation Loss: $(loss_function(models, x_val, y_val))")
         println("The best model was found at epoch: $best_epoch")
     end
 

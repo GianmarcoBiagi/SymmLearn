@@ -1,3 +1,5 @@
+using LinearAlgebra
+
 """
     element_charge
 
@@ -14,7 +16,7 @@ carbon_atomic_number = element_charge["C"]
 println("The atomic number of Carbon is: ", carbon_atomic_number)
 """ 
 
-element_charge = Dict(
+element_to_charge = Dict(
     "H" => 1,
     "He" => 2,
     "Li" => 3,
@@ -134,6 +136,28 @@ element_charge = Dict(
     "Ts" => 117,
     "Og" => 118,
 )
+"""
+    charge_to_element = Dict(v => k for (k, v) in element_charge)
+
+Creates a dictionary that maps atomic charges to their corresponding element names.
+
+# Arguments
+- `element_charge::Dict{String, Float64}`: A dictionary where keys are element names (e.g., `"Cs"`, `"Pb"`, `"I"`) and values are their respective atomic charges.
+
+# Returns
+- `Dict{Float64, String}`: A dictionary where keys are atomic charges and values are element names.
+
+# Example
+```julia
+element_charge = Dict("Cs" => 55.0, "Pb" => 85.0, "I" => 53.0)
+
+charge_to_element = Dict(v => k for (k, v) in element_charge)
+
+println(charge_to_element)  
+# Output: Dict(55.0 => "Cs", 85.0 => "Pb", 53.0 => "I")
+"""
+
+charge_to_element = Dict(v => k for (k, v) in element_to_charge)
 
 """
     distance_with_pbc(pos1, pos2, lattice_vectors)
@@ -167,16 +191,23 @@ distance = distance_with_pbc(pos1, pos2, lattice_vectors)
 println(distance)  # Output: The distance considering PBC
 """
 
-function distance_with_pbc(pos1, pos2, lattice_vectors)
-    # Calculate the difference between the two positions
-    delta = pos2 .- pos1
-
-    # Apply periodic boundary conditions (PBC)
-    delta_pbc = delta .- lattice_vectors .* round.(delta ./ lattice_vectors)
-
-    # Return the norm (Euclidean distance) of the adjusted difference
-    return norm(delta_pbc)
+function distance_with_pbc(pos1::Vector{Float32}, pos2::Vector{Float32}, lattice_vectors::Matrix{Float64})
+    # Calculate the displacement between the two positions
+    displacement = pos2 .- pos1
+    
+    # Apply periodic boundary conditions by wrapping the displacement within the unit cell
+    for i in 1:3
+        # For each direction, wrap the displacement using the corresponding lattice vector
+        displacement[i] -= round(displacement[i] / lattice_vectors[i, i]) * lattice_vectors[i, i]
+    end
+    
+    # Calculate the Euclidean distance
+    distance = norm(displacement)
+    
+    return distance
 end
+
+
 
 """
     fc(Rij::T, Rc::T) :: T where T
@@ -209,4 +240,32 @@ function fc(Rij::T, Rc::T) :: T where T
         return exp(arg)
     end
 end
+
+"""
+    uniform(a::Float64, b::Float64) -> Float64
+
+Generate a random number from a uniform distribution over the interval [a, b].
+
+# Arguments
+- `a::Float64`: The lower bound of the uniform distribution.
+- `b::Float64`: The upper bound of the uniform distribution.
+
+# Returns
+A random number drawn from the uniform distribution in the interval [a, b].
+
+# Example
+```julia
+random_number = uniform(5.0, 10.0)
+println(random_number)  # Will print a random number between 5 and 10
+
+```julia
+random_number = uniform(2.0, 5.0)
+println(random_number)  # Example output: 3.576
+"""
+
+
+
+
+
+
 

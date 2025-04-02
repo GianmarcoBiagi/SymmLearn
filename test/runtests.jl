@@ -83,7 +83,7 @@ end
     @test size(Val[1],1) == size(Val[2],1)
 
     # Step 4: Create models
-    time_create_model = @elapsed models = create_toy_model(["Cs", "Pb", "I"], 1.5f0, 1, false)
+    time_create_model = @elapsed models = create_toy_model(species, 1.5f0, 1, false)
     println("Time for create_model: ", time_create_model, " seconds")
     @test length(models) == 3
 

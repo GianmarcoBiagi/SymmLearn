@@ -114,7 +114,7 @@ Each dataset corresponds to a structure, and each structure consists of a number
 ### Example
 
 ```julia
-# Assume `dataset` contains atomic data and `all_lattice` contains corresponding lattice vectors
+# Assume `dataset` contains atomic data and `all_lattice` contains corresponding lattice matrices
 nn_input = create_nn_input(dataset, all_lattice, num_atoms=40)
 println(nn_input)
 
@@ -123,7 +123,6 @@ println(nn_input)
 # Function to create the neural network input array
 function create_nn_input(dataset, all_lattice, num_atoms::Int32)
     num_datasets = size(dataset)[3]
-
 
     # Input array shape: (num_datasets, num_atoms, num_atoms) of type Float32
     nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, num_atoms)

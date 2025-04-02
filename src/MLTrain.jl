@@ -234,39 +234,21 @@ A tuple containing:
 - `y_mean`: Mean of training data (for denormalization).
 - `y_std`: Standard deviation of training data (for denormalization).
 """
-function data_preprocess(input_data, target; split=[0.7, 0.3]::Vector{Float64}, verbose=false)
+function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64}, verbose=false)
+    # Convert target to Float32 early
+    target = Float32.(target)
 
+    # Partitioning the dataset in a single step
+    ((x_train, x_val, x_test), (y_train, y_val, y_test)) = partition([input_data, target], split)
 
-    # Partitioning the dataset
-    ((x_train, tempX), (y_train, tempY)) = partition([input_data, target], split)
-    ((x_val, x_test), (y_val, y_test)) = partition([tempX, tempY], [0.5, 0.5])
+    # Compute mean and standard deviation (using corrected=false for efficiency)
+    y_mean = mean(y_train)
+    y_std = std(y_train, corrected=false)
 
-    # Ensure y_train, y_val, and y_test are Float32
-    y_train = Float32.(y_train)
-    y_val = Float32.(y_val)
-    y_test = Float32.(y_test)
-
-    # Apply Z-score normalization
-    y_mean_1 = mean(y_train)
-    y_std_1 = std(y_train)
-
-    # First normalization
-    y_train .= (y_train .- y_mean_1) ./ y_std_1
-
-    # Recalculate mean and standard deviation
-    y_mean_2 = mean(y_train)
-    y_std_2 = std(y_train)
-
-    # Second normalization
-    y_train .= (y_train .- y_mean_2) ./ y_std_2
-
-    # Compute final mean and standard deviation (to invert normalization later)
-    y_mean = y_mean_2 * y_std_1 + y_mean_1
-    y_std = y_std_2 * y_std_1
-
-    # Apply the same normalization to validation and test sets
-    y_val .= (y_val .- y_mean) ./ y_std
-    y_test .= (y_test .- y_mean) ./ y_std
+    # Apply Z-score normalization in-place
+    @. y_train = (y_train - y_mean) / y_std
+    @. y_val = (y_val - y_mean) / y_std
+    @. y_test = (y_test - y_mean) / y_std
 
     # Print dataset dimensions if verbose mode is enabled
     if verbose
@@ -277,6 +259,7 @@ function data_preprocess(input_data, target; split=[0.7, 0.3]::Vector{Float64}, 
 
     return (x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std
 end
+
 
 """
     create_model(ions::Vector{String}, R_cutoff::Float32, G1_number::Int = 5, verbose::Bool = false) -> Dict{String, Chain}
@@ -447,7 +430,7 @@ Trains a set of neural network models for predicting atomic energies.
 - `Dict{String, Chain}`: The trained models.
 """
 function train_model!(
-    models::Tuple{ModelContainer},
+    models::Tuple,
     x_train::Array{Float32,3}, 
     y_train::Vector{Float32}, 
     x_val::Array{Float32,3}, 

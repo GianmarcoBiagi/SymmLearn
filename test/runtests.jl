@@ -37,6 +37,15 @@ function create_toy_model(
         models[i] = ModelContainer(ion_name, model)
     end
 
+        # Check if a GPU is available and move models to GPU if possible
+    if CUDA.functional()
+        device_name = CUDA.name(CUDA.device())  # Get GPU name
+        models = [ModelContainer(m.name, m.model |> gpu) for m in models]
+        println("Models successfully mounted on GPU: ", device_name)
+    else
+        println("No GPU available. Models remain on CPU.")
+    end
+
     # Print model details if verbose is enabled
     if verbose
         for container in models

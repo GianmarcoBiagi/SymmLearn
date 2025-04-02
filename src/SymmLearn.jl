@@ -6,6 +6,8 @@ using LinearAlgebra
 using Random
 using Statistics
 using ExtXYZ
+using CUDA
+using cuDNN
 
 
 include("MLTrain.jl")

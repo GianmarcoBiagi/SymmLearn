@@ -2,6 +2,8 @@ using Flux
 using Random
 using ProgressMeter
 using Statistics
+using CUDA
+using cuDNN
 
 """
     struct ModelContainer
@@ -218,7 +220,8 @@ end
 """
     data_preprocess(input_data, output_data; split=[0.7, 0.3], verbose=false)
 
-Preprocesses the data by splitting it into training, validation, and test sets and applying Z-score normalization.
+Preprocesses the data by splitting it into training, validation, and test sets, applying Z-score normalization, 
+and moving data to the GPU if available.
 
 # Arguments
 - `input_data`: Input dataset.
@@ -249,6 +252,18 @@ function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Flo
     @. y_train = (y_train - y_mean) / y_std
     @. y_val = (y_val - y_mean) / y_std
     @. y_test = (y_test - y_mean) / y_std
+
+    # Check if a GPU is available and move data if possible
+    if CUDA.functional()
+        device_name = CUDA.name(CUDA.device())  # Get GPU name
+        x_train, y_train = cu(x_train), cu(y_train)
+        x_val, y_val = cu(x_val), cu(y_val)
+        x_test, y_test = cu(x_test), cu(y_test)
+
+        println("Data successfully mounted on GPU: ", device_name)
+    else
+        println("No GPU available. Data remains on CPU.")
+    end
 
     # Print dataset dimensions if verbose mode is enabled
     if verbose
@@ -311,6 +326,15 @@ function create_model(
         
         # Store the model inside ModelContainer
         models[i] = ModelContainer(ion_name, model)
+    end
+
+    # Check if a GPU is available and move models to GPU if possible
+    if CUDA.functional()
+        device_name = CUDA.name(CUDA.device())  # Get GPU name
+        models = [ModelContainer(m.name, m.model |> gpu) for m in models]
+        println("Models successfully mounted on GPU: ", device_name)
+    else
+        println("No GPU available. Models remain on CPU.")
     end
 
     # Print model details if verbose is enabled

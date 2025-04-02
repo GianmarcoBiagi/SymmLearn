@@ -353,7 +353,7 @@ end
 Computes the mean squared error (MSE) loss between predicted and reference total energies.
 
 # Arguments
-- `models::`: A tuple mapping ion names (e.g., `"Cs"`, `"Pb"`, `"I"`) to their neural network models.
+- `models::Tuple{ModelContainer}`: A Tuple containing ModelContainer objects.
 - `data::Array`: A 3D array where:
     - The first dimension represents different structures.
     - The second dimension represents atoms within a structure.
@@ -385,10 +385,11 @@ function loss_function(
     data::Array{Float32,3},       # Data: (structures, atoms, features)
     energies::Vector{Float32}     # Reference total energies
 ) 
+
     total_loss = 0.0
     n_structures = size(data)[1]
     
-    n_of_ions=size(models,1)[1]
+    n_of_ions=size(models,1)
     
 
     for k in 1:n_structures # ciclo sui dataset
@@ -402,8 +403,8 @@ function loss_function(
             ion_name=charge_to_element[charge]
 
             for i in 1:n_of_ions
-
-               if "$(ion_name)_model" == String(models[i][1])
+        
+               if "$(ion_name)_model" == models[i].name
                 temp += models[i][2](features)[1]
                end
             end
@@ -412,8 +413,6 @@ function loss_function(
     
     total_loss += abs2(temp - energies[k])
     end
-    println("Per ora il codice si ferma qui dato che non riesco a risolvere la questione degli array mutabili")
-    exit()
     return total_loss / n_structures # Media della perdita
     end 
 
@@ -430,7 +429,7 @@ function loss_function(
 Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
-- `models::`: A Struct mapping ion names to their neural network models.
+- `models::Tuple`: A Tuple containing ModelContainer objects.
 - `x_train::Array{Float32,3}`: Training data (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
 - `x_val::Array{Float32,3}`: Validation data (same shape as `x_train`).
@@ -448,7 +447,7 @@ Trains a set of neural network models for predicting atomic energies.
 - `Dict{String, Chain}`: The trained models.
 """
 function train_model!(
-    models::Tuple,
+    models::Tuple{ModelContainer},
     x_train::Array{Float32,3}, 
     y_train::Vector{Float32}, 
     x_val::Array{Float32,3}, 
@@ -481,7 +480,7 @@ function train_model!(
         end
 
         # Compute losses
-        loss_train[epoch] = loss_function(models, x_train, y_train,)
+        loss_train[epoch] = loss_function(models, x_train, y_train)
         loss_val[epoch] = loss_function(models, x_val, y_val)
 
         # Save best model
@@ -504,7 +503,7 @@ function train_model!(
     end
 
     # Assign best models
-    models .= best_models
+    #models .= best_models
 
 
     if verbose

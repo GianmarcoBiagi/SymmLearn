@@ -4,6 +4,40 @@ using ProgressMeter
 using Statistics
 
 """
+    struct ModelContainer
+
+A container for storing a neural network model along with its associated name.  
+This struct is **immutable**, meaning that once created, the `name` and `model` fields cannot be reassigned.  
+However, the model itself remains mutable, allowing modifications to its parameters.
+
+# Fields
+- `name::String` : The name of the model (e.g., associated with a specific ion or element).
+- `model::Flux.Chain` : The neural network model, which can be trained and updated.
+
+# Example
+```julia
+using Flux
+
+# Create a simple neural network model
+m = Chain(Dense(2, 5, relu), Dense(5, 1))
+
+# Store the model in an immutable container
+container = ModelContainer("MyModel", m)
+
+# Modify the model parameters (allowed)
+Flux.train!(m, rand(2, 10), rand(1, 10), ADAM())
+
+# Attempting to reassign a new model (not allowed)
+container.model = Chain(Dense(2, 5), Dense(5, 1))  # ERROR: "setfield! immutable struct"
+"""
+
+struct ModelContainer
+    name::String
+    model::Flux.Chain  # The model remains mutable
+end
+
+
+"""
     struct MyLayer
 
 A custom layer structure that contains two sets of weights for neural network connections, as well as additional parameters related to the system.
@@ -257,7 +291,7 @@ number of input features. The models are stored in a dictionary where the keys f
 - `verbose::Bool = false`: If `true`, prints the model structures after creation.
 
 ### Returns
-- `Dict{String, Chain}`: A dictionary where each key is `"ion_model"` and the corresponding value is a neural network (`Chain`).
+- `Tuple(ModelContainer)`: A tuple where each model and the corresponding name are stored.
 
 ### Example
 ```julia
@@ -276,8 +310,8 @@ function create_model(
     # Number of ions
     n_of_ions = length(ions)
 
-    # Create an array of tuples to store models: [name, model]
-    models = Vector{Tuple{Symbol, Chain}}(undef, n_of_ions)
+    # Create an array to store ModelContainer instances
+    models = Vector{ModelContainer}(undef, n_of_ions)
 
     # Create a neural network model for each ion and assign to the array
     for i in 1:n_of_ions
@@ -292,15 +326,15 @@ function create_model(
             Dense(5, 1)
         )
         
-        # Assign the name and model to the array at the ith position
-        models[i] = (Symbol("$(ion_name)_model"), model)
+        # Store the model inside ModelContainer
+        models[i] = ModelContainer(ion_name, model)
     end
 
     # Print model details if verbose is enabled
     if verbose
-        for (name, model) in models
-            println("A model has been created called: ", name)
-            println(model)
+        for container in models
+            println("A model has been created called: ", container.name)
+            println(container.model)
             println("────────────────────────────────")
         end
     end
@@ -312,13 +346,14 @@ function create_model(
 end
 
 
+
 """
     loss_function(models, data, energies)
 
 Computes the mean squared error (MSE) loss between predicted and reference total energies.
 
 # Arguments
-- `models::Vector{Tuple{Symbol, Chain}}`: A tuple mapping ion names (e.g., `"Cs"`, `"Pb"`, `"I"`) to their neural network models.
+- `models::`: A tuple mapping ion names (e.g., `"Cs"`, `"Pb"`, `"I"`) to their neural network models.
 - `data::Array`: A 3D array where:
     - The first dimension represents different structures.
     - The second dimension represents atoms within a structure.
@@ -346,7 +381,7 @@ loss = loss_function(data, energies, models)
 println("Loss: ", loss)
 """
 function loss_function(
-    models,  # Tuple mapping element names to ML models
+    models::Tuple,  # Struct mapping element names to ML models
     data::Array{Float32,3},       # Data: (structures, atoms, features)
     energies::Vector{Float32}     # Reference total energies
 ) 
@@ -395,7 +430,7 @@ function loss_function(
 Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
-- `models::Tuple{Tuple{Symbol, Chain}}}`: A Tuple mapping ion names to their neural network models.
+- `models::`: A Struct mapping ion names to their neural network models.
 - `x_train::Array{Float32,3}`: Training data (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
 - `x_val::Array{Float32,3}`: Validation data (same shape as `x_train`).
@@ -413,7 +448,7 @@ Trains a set of neural network models for predicting atomic energies.
 - `Dict{String, Chain}`: The trained models.
 """
 function train_model!(
-    models,
+    models::Tuple,
     x_train::Array{Float32,3}, 
     y_train::Vector{Float32}, 
     x_val::Array{Float32,3}, 

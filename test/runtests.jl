@@ -83,9 +83,13 @@ end
     @test size(Val[1],1) == size(Val[2],1)
 
     # Step 4: Create models
-    time_create_model = @elapsed models = create_toy_model(species, 1.5f0, 1, false)
+    time_create_model = @elapsed models = create_toy_model(species, 1.5f0, 2, false)
     println("Time for create_model: ", time_create_model, " seconds")
     @test length(models) == 3
+
+    # Clone the parameters of the first model first layer for later
+    first_layer = models[1].model[1]  
+    original_params = Flux.trainable(first_layer)[1] 
 
     # Step 5: Train the model
     time_train = @elapsed trained_model = train_model!(
@@ -98,5 +102,13 @@ end
         epochs=1, batch_size=4, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")
-    @test !isempty(trained_model)
+
+    # Check to see if parameters actually changed after the training
+    
+    first_layer = trained_model[1].model[1]  
+    trained_params = Flux.trainable(first_layer)[1] 
+
+    @test original_params != trained_params
+    
+
 end

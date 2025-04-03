@@ -154,9 +154,7 @@ show(stdout, layer)
 
 # Custom implementation of the show function for displaying MyLayer
 function Base.show(io::IO, layer::MyLayer)
-    println(io, "CustomLayer with two links per input neuron (eta and Fs)")
-    println(io, "Weights eta: ", layer.W_eta)
-    println(io, "Weights Fs: ", layer.W_Fs)
+    print(io, "CustomLayer with two links per input neuron (eta and Fs), uses also the cutoff radius and 0.1*charge of the element as parameters")
 end
 
 """

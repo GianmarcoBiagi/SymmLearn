@@ -88,8 +88,8 @@ end
     @test length(models) == 3
 
     # Clone the parameters of the first model first layer for later
-    first_layer = models[1].model[1]  
-    original_params = Flux.trainable(first_layer)[1] 
+    last_layer = models[1].model[3]  
+    original_params = Flux.trainable(last_layer)[1] 
 
     # Step 5: Train the model
     time_train = @elapsed trained_model = train_model!(
@@ -105,8 +105,8 @@ end
 
     # Check to see if parameters actually changed after the training
     
-    first_layer = trained_model[1].model[1]  
-    trained_params = Flux.trainable(first_layer)[1] 
+    last_layer = trained_model[1].model[3]  
+    trained_params = Flux.trainable(last_layer)[1] 
 
     @test original_params != trained_params
     

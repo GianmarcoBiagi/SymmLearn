@@ -75,6 +75,8 @@ struct MyLayer
     charge::Float32       # Atomic charge
 end
 
+Flux.@layer MyLayer
+
 """
     MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32) -> MyLayer
 
@@ -403,8 +405,7 @@ function loss_function(
     
         for i in 1:n_atoms # ciclo sugli atomi del dataset
             charge = data[k, i, 1]
-            features = data[k, i, 2:40]
-
+            features = view(data, k, i, 2:size(data, 3))
             ion_name=charge_to_element[charge]
 
             for i in 1:n_of_ions
@@ -507,8 +508,6 @@ function train_model!(
         end
     end
 
-    # Assign best models
-    #models .= best_models
 
 
     if verbose
@@ -517,7 +516,7 @@ function train_model!(
         println("The best model was found at epoch: $best_epoch")
     end
 
-    return models
+    return best_models
 end
 
 

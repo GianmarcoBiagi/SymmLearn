@@ -38,7 +38,7 @@ struct ModelContainer
     model::Flux.Chain  # The model remains mutable
 end
 
-
+Flux.@layer ModelContainer
 """
     struct MyLayer
 
@@ -518,49 +518,3 @@ function train_model!(
 
     return best_models
 end
-
-
-
-
-"""
-    xyz_to_nn_input(file_path::String)
-
-Processes an XYZ file to generate input data for a neural network.
-
-# Arguments
-- `file_path::String`: The path to the XYZ file containing atomic structures and energies.
-
-# Returns
-- `Train`: Training dataset.
-- `Val`: Validation dataset.
-- `Test_data`: Test dataset.
-- `y_mean`: Mean energy value for normalization.
-- `y_std`: Standard deviation of energy values for normalization.
-- `species`: List of atomic species present in the dataset, can be used as an input for the create_model function.
-
-# Description
-This function extracts atomic structure and energy information from the input file.
-It then generates an input dataset suitable for neural network training. The data
-is preprocessed, normalized, and split into training, validation, and test sets.
-
-# Dependencies
-- `extract_data(file_path)`: Extracts atomic structures, species, cell information, and energies from the input file.
-- `create_nn_input(dataset, all_cells, N_atoms)`: Generates the neural network input dataset.
-- `data_preprocess(nn_input_dataset, all_energies)`: Normalizes and splits the dataset into train, validation, and test sets.
-"""
-function xyz_to_nn_input(file_path::String)
-
-    # Extract atomic and structural information from the input XYZ file
-    N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
-
-    # Create the neural network input dataset
-    create_nn_input(dataset, all_cells, N_atoms)
-
-    # Preprocess data: normalize, split into train, validation, and test sets
-    Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)
-    
-    # Return the processed datasets and normalization parameters
-    return (Train, Val, Test_data, y_mean, y_std, species)
-end
-
-

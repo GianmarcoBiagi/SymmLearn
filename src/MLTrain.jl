@@ -6,40 +6,6 @@ using CUDA
 using cuDNN
 
 """
-    struct ModelContainer
-
-A container for storing a neural network model along with its associated name.  
-This struct is **immutable**, meaning that once created, the `name` and `model` fields cannot be reassigned.  
-However, the model itself remains mutable, allowing modifications to its parameters.
-
-# Fields
-- `name::String` : The name of the model (e.g., associated with a specific ion or element).
-- `model::Flux.Chain` : The neural network model, which can be trained and updated.
-
-# Example
-```julia
-using Flux
-
-# Create a simple neural network model
-m = Chain(Dense(2, 5, relu), Dense(5, 1))
-
-# Store the model in an immutable container
-container = ModelContainer("MyModel", m)
-
-# Modify the model parameters (allowed)
-Flux.train!(m, rand(2, 10), rand(1, 10), ADAM())
-
-# Attempting to reassign a new model (not allowed)
-container.model = Chain(Dense(2, 5), Dense(5, 1))  # ERROR: "setfield! immutable struct"
-"""
-
-struct ModelContainer
-    name::String
-    model::Flux.Chain  # The model remains mutable
-end
-
-Flux.@layer ModelContainer
-"""
     struct MyLayer
 
 A custom layer structure that contains two sets of weights for neural network connections, as well as additional parameters related to the system.
@@ -159,208 +125,149 @@ function Base.show(io::IO, layer::MyLayer)
     print(io, "CustomLayer with two links per input neuron (eta and Fs), uses also the cutoff radius and 0.1*charge of the element as parameters")
 end
 
-"""
-    partition(data,parts;shuffle,dims,rng)
-
-Partition (by rows) one or more matrices according to the shares in `parts`.
-
-# Parameters
-* `data`: A matrix/vector or a vector of matrices/vectors
-* `parts`: A vector of the required shares (must sum to 1)
-* `shufle`: Whether to randomly shuffle the matrices (preserving the relative order between matrices)
-* `dims`: The dimension for which to partition [def: `1`]
-* `copy`: Wheter to _copy_ the actual data or only create a reference [def: `true`]
-* `rng`: Random Number Generator (see [`FIXEDSEED`](@ref)) [deafult: `Random.GLOBAL_RNG`]
-
-# Notes:
-* The sum of parts must be equal to 1
-* The number of elements in the specified dimension must be the same for all the arrays in `data`
-
-# Example:
-```julia
-julia> x = [1:10 11:20]
-julia> y = collect(31:40)
-julia> ((xtrain,xtest),(ytrain,ytest)) = partition([x,y],[0.7,0.3])
- ```
- """
-function partition(data::AbstractArray{T,1},parts::AbstractArray{Float64,1};shuffle=true,dims=1,copy=true,rng = Random.GLOBAL_RNG) where T <: AbstractArray
-        # the sets of vector/matrices
-        N = size(data[1],dims)
-        all(size.(data,dims) .== N) || @error "All matrices passed to `partition` must have the same number of elements for the required dimension"
-        ridx = shuffle ? Random.shuffle(rng,1:N) : collect(1:N)
-        return partition.(data,Ref(parts);shuffle=shuffle,dims=dims,fixed_ridx = ridx,copy=copy,rng=rng)
-end
-
-function partition(data::AbstractArray{T,Ndims}, parts::AbstractArray{Float64,1};shuffle=true,dims=1,fixed_ridx=Int64[],copy=true,rng = Random.GLOBAL_RNG) where {T,Ndims}
-    # the individual vector/matrix
-    N        = size(data,dims)
-    nParts   = size(parts)
-    toReturn = toReturn = Array{AbstractArray{T,Ndims},1}(undef,nParts)
-    if !(sum(parts) ≈ 1)
-        @error "The sum of `parts` in `partition` should total to 1."
-    end
-    ridx = fixed_ridx
-    if (isempty(ridx))
-       ridx = shuffle ? Random.shuffle(rng, 1:N) : collect(1:N)
-    end
-    allDimIdx = convert(Vector{Union{UnitRange{Int64},Vector{Int64}}},[1:i for i in size(data)])
-    current = 1
-    cumPart = 0.0
-    for (i,p) in enumerate(parts)
-        cumPart += parts[i]
-        final = i == nParts ? N : Int64(round(cumPart*N))
-        allDimIdx[dims] = ridx[current:final]
-        toReturn[i]     = copy ? data[allDimIdx...] : @views data[allDimIdx...]
-        current         = (final +=1)
-    end
-    return toReturn
-end
 
 
 """
-    data_preprocess(input_data, output_data; split=[0.7, 0.3], verbose=false)
+    assemble_model(
+      species_models::Dict{String,Chain},
+      species_order::Vector{String}
+    ) -> Chain
 
-Preprocesses the data by splitting it into training, validation, and test sets, applying Z-score normalization, 
-and moving data to the GPU if available.
+Constructs a Flux model that applies the correct species‐specific subnetwork
+to each atom in a fixed ordering, then sums their scalar outputs to produce
+one total energy per structure.
 
 # Arguments
-- `input_data`: Input dataset.
-- `output_data`: Output dataset (target values).
-- `split`: A vector specifying the proportions for data splitting (default `[0.7, 0.3]`).
-- `verbose`: If `true`, prints dataset dimensions (default `false`).
+- `species_models::Dict{String,Chain}`  
+  A dictionary mapping each atomic species (e.g. `"H"`, `"C"`, `"O"`) to its
+  corresponding `Flux.Chain` subnetwork (as produced by `create_species_models`).
+
+- `species_order::Vector{String}`  
+  A length‑N vector giving, for atom slots `1…N`, which species occupies that
+  slot.  Must use exactly the same keys as in `species_models`.
 
 # Returns
-A tuple containing:
-- `(x_train, y_train)`: Training set.
-- `(x_val, y_val)`: Validation set.
-- `(x_test, y_test)`: Test set.
-- `y_mean`: Mean of training data (for denormalization).
-- `y_std`: Standard deviation of training data (for denormalization).
-"""
-function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64}, verbose=false)
-    # Convert target to Float32 early
-    target = Float32.(target)
+- `Chain`  
+  A `Flux.Chain` whose first layer is a `Flux.Parallel` of length N branches.
+  Branch `i` is exactly `species_models[species_order[i]]`.  Its output is a
+  tuple of N per‑atom scalars (shape `(batch_size,)` each), which the final
+  anonymous layer sums into one `(batch_size,)` vector of total energies.
 
-    # Partitioning the dataset in a single step
-    ((x_train, x_val, x_test), (y_train, y_val, y_test)) = partition([input_data, target], split)
+# Example
 
-    # Compute mean and standard deviation (using corrected=false for efficiency)
-    y_mean = mean(y_train)
-    y_std = std(y_train, corrected=false)
-
-    # Apply Z-score normalization in-place
-    @. y_train = (y_train - y_mean) / y_std
-    @. y_val = (y_val - y_mean) / y_std
-    @. y_test = (y_test - y_mean) / y_std
-
-    # Check if a GPU is available and move data if possible
-    if CUDA.functional()
-        device_name = CUDA.name(CUDA.device())  # Get GPU name
-        x_train, y_train = cu(x_train), cu(y_train)
-        x_val, y_val = cu(x_val), cu(y_val)
-        x_test, y_test = cu(x_test), cu(y_test)
-
-        println("Data successfully mounted on GPU: ", device_name)
-    else
-        println("No GPU available. Data remains on CPU.")
-    end
-
-    # Print dataset dimensions if verbose mode is enabled
-    if verbose
-        println("x_train dimensions: ", size(x_train))
-        println("x_val dimensions: ", size(x_val))
-        println("x_test dimensions: ", size(x_test))
-    end
-
-    return (x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std
-end
-
-
-"""
-    create_model(ions::Vector{String}, R_cutoff::Float32, G1_number::Int = 5, verbose::Bool = false) -> Dict{String, Chain}
-
-Creates a set of neural network models, one for each ion in the input list, using the specified cutoff radius and 
-number of input features. The models are stored in a dictionary where the keys follow the format `"ion_model"`.
-
-### Arguments
-- `ions::Vector{String}`: List of ion symbols for which models will be created.
-- `R_cutoff::Float32`: Cutoff radius used in the `MyLayer` layer.
-- `G1_number::Int = 5`: Number of input features in the first layer (default = 5).
-- `verbose::Bool = false`: If `true`, prints the model structures after creation.
-
-### Returns
-- `Tuple(ModelContainer)`: A tuple where each model and the corresponding name are stored.
-
-### Example
 ```julia
-models = create_model(["Li", "Na", "K"], 6.5, 8, verbose=true)
+# 1) Suppose you have
+species_list  = ["H","C","O"]
+species_models = create_species_models(species_list, G1_number, R_cutoff)
+
+# 2) And your data always has N=40 atom‐slots, with known species at each slot:
+species_order = ["H","H","O","C", …]  # length 40
+
+# 3) Build the full model:
+model = assemble_atomic_model(species_models, species_order)
+
+# 4) Now `model` expects, as input, a tuple of 40 elements, each of shape
+#    (batch_size, features...), e.g. (x[:,1,:], x[:,2,:], …, x[:,40,:]).
+#    It returns a 1‑D array of length batch_size.
+
+# 5) You can train with:
+loss(x,y) = Flux.Losses.mse(model(ntuple(i-> x[:,i,:], 40)), y)
+opt = Flux.Adam(1e-3)
+Flux.train!(loss, params(model), data, opt)
 """
 
-function create_model(
-    ions::Vector{String}, 
-    R_cutoff::Float32, 
-    G1_number::Int = 5, 
-    verbose::Bool = false
+function assemble_model(
+    species_models::Dict{String,Chain},
+    species_order::Vector{String}
 )
-    # Get ion charges using element_charge dictionary
-    ion_charges = 0.1f0 * getindex.(Ref(element_to_charge), ions)
-
-    # Number of ions
-    n_of_ions = length(ions)
-
-    # Create an array to store ModelContainer instances
-    models = Vector{ModelContainer}(undef, n_of_ions)
-
-    # Create a neural network model for each ion and assign to the array
-    for i in 1:n_of_ions
-        ion_name = ions[i]
-        
-        # Create the model
-        model = Chain(
-            MyLayer(1, G1_number, R_cutoff, ion_charges[i]),
-            Dense(G1_number, 15, tanh),
-            Dense(15, 10, tanh),
-            Dense(10, 5, tanh),
-            Dense(5, 1)
-        )
-        
-        # Store the model inside ModelContainer
-        models[i] = ModelContainer(ion_name, model)
-    end
-
-    # Check if a GPU is available and move models to GPU if possible
-    if CUDA.functional()
-        device_name = CUDA.name(CUDA.device())  # Get GPU name
-        models = [ModelContainer(m.name, m.model |> gpu) for m in models]
-        println("Models successfully mounted on GPU: ", device_name)
-    else
-        println("No GPU available. Models remain on CPU.")
-    end
-
-    # Print model details if verbose is enabled
-    if verbose
-        for container in models
-            println("A model has been created called: ", container.name)
-            println(container.model)
-            println("────────────────────────────────")
-        end
-    end
-
-    # Convert models array into an immutable Tuple
-    models_final = Tuple(models)
-
-    return models_final  # Return the immutable Tuple of models
+    N = length(species_order)
+    branches = ntuple(i -> species_models[species_order[i]], N)
+    p = Parallel(branches...)
+    sum_layer = x_tuple -> reduce(+, x_tuple)
+    return Chain(p, sum_layer)
 end
 
 
 
 """
-    loss_function(models, data, energies)
+    create_species_models(species::Vector{String}, G1_number::Int, R_cutoff::Float32) -> Dict{String, Chain}
+
+Given a list of unique atomic species, construct and return a dictionary mapping
+each species name to its corresponding Flux.Chain model.  Each model branch
+is built by calling `build_branch(name, G1_number, R_cutoff)`.
+
+# Arguments
+- `species::Vector{String}`: List of species , e.g. `["H","H","C","O","O",...]`.
+- `G1_number::Int`: Number of symmetry‑function features fed into the branch.
+- `R_cutoff::Float32`: Cutoff radius used by the custom `MyLayer`.
+
+# Returns
+- `Dict{String, Chain}`: A dictionary where
+    `dict["H"]` is the Chain for hydrogen,
+    `dict["C"]` is the Chain for carbon, etc.
+"""
+function create_species_models(
+    species::Vector{String},
+    G1_number::Int,
+    R_cutoff::Float32
+)   
+    unique_species = Set(species)
+    unique_species = collect(unique_species)
+    models = Dict{String, Chain}()
+    for sp in unique_species
+        # build_branch returns a Flux.Chain for that species
+        models[sp] = build_branch(sp, G1_number, R_cutoff)
+    end
+    return models
+end
+
+
+
+"""
+    build_branch(Atom_name::String, G1_number::Float32, R_cutoff::Float32) -> Chain
+
+Constructs a species-specific neural network branch for a given atom type.
+
+This function returns a `Flux.Chain` model tailored to a specific atomic species, 
+using a custom `MyLayer` followed by several dense layers. The model structure is:
+
+- `MyLayer`: Applies element-specific transformations based on pairwise distances, 
+   a cutoff radius, and the ion charge.
+- `Dense` layers: A sequence of fully connected layers with `tanh` activations that process 
+   the atomic descriptor vector to output a scalar energy prediction for the atom.
+
+# Arguments
+- `Atom_name::String`: The name of the atom (e.g. `"H"`, `"O"`, `"C"`). Used to determine the ion charge via `element_to_charge`.
+- `G1_number::Int`: The number of symmetry functions or features computed by `MyLayer`.
+- `R_cutoff::Float32`: The cutoff radius beyond which atomic interactions are ignored in `MyLayer`.
+
+# Returns
+- `Flux.Chain`: A model that takes atomic environment features and predicts a per-atom energy contribution.
+
+# Example
+```julia
+model = build_branch("O", 6.0f0, 5.0f0)
+output = model(input_vector)  # input_vector should match the expected dimensionality
+"""
+
+function build_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
+    ion_charge = 0.1f0 * element_to_charge[Atom_name]
+    return Chain(
+        MyLayer(1, G1_number, R_cutoff, ion_charge),
+        Dense(G1_number, 15, tanh),
+        Dense(15, 10, tanh),
+        Dense(10, 5, tanh),
+        Dense(5, 1)
+    )
+end
+
+"""
+    loss_function(model, data, energies)
 
 Computes the mean squared error (MSE) loss between predicted and reference total energies.
 
 # Arguments
-- `models::Tuple{ModelContainer}`: A Tuple containing ModelContainer objects.
+- `model : A Flux.Chain object being the model to train.
 - `data::Array`: A 3D array where:
     - The first dimension represents different structures.
     - The second dimension represents atoms within a structure.
@@ -388,59 +295,58 @@ loss = loss_function(data, energies, models)
 println("Loss: ", loss)
 """
 function loss_function(
-    models::Tuple,  # Struct mapping element names to ML models
-    data::Array{Float32,3},       # Data: (structures, atoms, features)
+    model,  # the model
+    data::Array{Float32,3},       # Data: (3,structures, atoms, features)
     energies::Vector{Float32}     # Reference total energies
 ) 
 
     total_loss = 0.0
     n_structures = size(data)[1]
+
+    for k in 1:n_structures
+
+        temp=model(data)
+        total_loss+=abs2(temp-energies[k])
     
-    n_of_ions=size(models,1)
+    end
+    """
     
 
-    for k in 1:n_structures # ciclo sui dataset
+    
+    for k in 1:n_structures # loop on the datasets
         temp = 0.0
-        n_atoms = size(data)[2] # numero di atomi
+        n_atoms = size(data)[2] # number of atoms in the structure
     
-        for i in 1:n_atoms # ciclo sugli atomi del dataset
-            charge = data[k, i, 1]
-            features = view(data, k, i, 2:size(data, 3))
-            ion_name=charge_to_element[charge]
+        for i in 1:n_atoms # loop on the atoms of the structure
 
-            for i in 1:n_of_ions
-        
-               if "$(ion_name)_model" == models[i].name
-                temp += models[i][2](features)[1]
-               end
-            end
-            
+            features = view(data, k, i, 2:size(data, 3))
+            temp += model(features)[1]
+
         end
     
     total_loss += abs2(temp - energies[k])
     end
-    return total_loss / n_structures # Media della perdita
-    end 
-
-
-
+    """
+    return  total_loss / n_structures # Average Loss
+end 
 
 
 
 """
-    train_model!(models, x_train, y_train, x_val, y_val, loss_function; 
+    train_model!(model, x_train, y_train, x_val, y_val, loss_function; 
                  initial_lr=0.01f0, min_lr=1e-5, decay_factor=0.5, patience=25, 
                  epochs=3000, batch_size=32, verbose=true)
 
 Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
-- `models::Tuple`: A Tuple containing ModelContainer objects.
+- ``model : A Flux.Chain object being the model to train.
 - `x_train::Array{Float32,3}`: Training data (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
 - `x_val::Array{Float32,3}`: Validation data (same shape as `x_train`).
 - `y_val::Vector{Float32}`: Validation total energies.
 - `loss_function::Function`: Function computing the loss (should be `loss_function(data, energies, models, element_charge)`).
+- `species: array withe the species list of the system.
 - `initial_lr::Float32=0.01`: Initial learning rate for the optimizer.
 - `min_lr::Float32=1e-5`: Minimum learning rate before stopping.
 - `decay_factor::Float32=0.5`: Factor by which learning rate decreases when no improvement.
@@ -453,54 +359,59 @@ Trains a set of neural network models for predicting atomic energies.
 - `Dict{String, Chain}`: The trained models.
 """
 function train_model!(
-    models::Tuple,
+    model,
     x_train::Array{Float32,3}, 
     y_train::Vector{Float32}, 
     x_val::Array{Float32,3}, 
     y_val::Vector{Float32}, 
-    loss_function::Function;
-    initial_lr=0.01f0, min_lr=1e-5, decay_factor=0.5, patience=25, 
+    loss_function::Function,
+    species::Array{String};
+    initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
     epochs=3000, batch_size=32, verbose=true
 )
     # Initialize optimizer
-    opt_state = Flux.setup(Adam(initial_lr), models)
+    opt_state = Flux.setup(Adam(initial_lr), model)
 
     # Store best models and best loss
     best_epoch = 0
     best_loss = Inf
-    best_models = deepcopy(models)
+    best_model = deepcopy(model)
 
     # Loss tracking
     loss_train = zeros(Float32, epochs)
     loss_val = zeros(Float32, epochs)
     no_improve_count = 0
-
     @showprogress for epoch in 1:epochs
         for i in 1:batch_size:size(x_train, 1)
+            
             end_index = min(i + batch_size - 1, size(x_train, 1))
             x_batch = x_train[i:end_index, :, :]
             y_batch = y_train[i:end_index]
+            println("output_rete: $(model(x_batch))")
+            exit(0)
+            println("loss: $(loss_function(model,x_batch,y_batch))")
+
             
-            # Training step
-            Flux.train!(loss_function, models, [(x_batch, y_batch)], opt_state)
+            
+            Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
         end
 
         # Compute losses
-        loss_train[epoch] = loss_function(models, x_train, y_train)
-        loss_val[epoch] = loss_function(models, x_val, y_val)
+        loss_train[epoch] = loss_function(model, x_train, y_train)
+        loss_val[epoch] = loss_function(model, x_val, y_val)
 
-        # Save best model
+        # Save best models
         if loss_val[epoch] < best_loss * 0.95
             best_epoch = epoch
             best_loss = loss_val[epoch]
-            best_models = deepcopy(models)
+            best_model = deepcopy(model)
         end
 
 
         # Adjust learning rate if no improvement
         if no_improve_count >= patience
             new_lr = max(opt.lr * decay_factor, min_lr)
-            opt = Flux.Adam(new_lr)
+            opt_state = Flux.setup(Adam(new_lr), model)
             no_improve_count = 0
             if verbose
                 println("Reducing learning rate to $(new_lr) at epoch $epoch")
@@ -516,5 +427,5 @@ function train_model!(
         println("The best model was found at epoch: $best_epoch")
     end
 
-    return best_models
+    return best_model
 end

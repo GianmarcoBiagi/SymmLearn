@@ -19,13 +19,13 @@ The function returns this data in a structured format for further analysis.
 ### Returns:
 A tuple containing the following elements:
 1. `atoms_in_a_cell::Int`: The number of atoms in a single unit cell (assumed to be the same in all the frames).
-2. `species::Vector{String}`: A vector containing the unique species (elements) present in the system.
-3. `all_cells::Array{Float32, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
-4. `dataset::Array{Float32, 3}`: A 3D array with the following data for each configuration:
-   - Row 1: Atomic charges (mapped from species)
-   - Rows 2-4: Atomic positions (x, y, z)
-   - Rows 5-7: Forces acting on atoms (fx, fy, fz)
-5. `all_energies::Vector{Float32}`: A vector containing the total energy for each configuration.
+2. `species::Vector{String}`: A vector containing the species (elements) present in the system.
+3. `uniqe_species::Vector{String}`: A vector containing the unique species (elements) present in the system.
+4. `all_cells::Array{Float32, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
+5. `dataset::Array{Float32, 3}`: A 3D array with the following data for each configuration:
+   - Rows 1-3: Atomic positions (x, y, z)
+   - Rows 4-6: Forces acting on atoms (fx, fy, fz)
+6. `all_energies::Vector{Float32}`: A vector containing the total energy for each configuration.
 
 ### Functionality:
 1. **Reading the data**: The function first reads the data from the provided path using `read_frames(path)`.
@@ -57,12 +57,13 @@ function extract_data(path::String)
     # Pre-allocate the arrays to store the extracted data
     all_energies = zeros(Float32, n_of_configs)  # Array to store energies of each configuration
     all_cells = zeros(Float32, 3, 3, n_of_configs)  # Array to store cell matrix for each configuration
-    dataset = zeros(Float32, 7, atoms_in_a_cell, n_of_configs)  # 3D dataset to store atomic information for each configuration
+    dataset = zeros(Float32, 6, atoms_in_a_cell, n_of_configs)  # 3D dataset to store atomic information for each configuration
 
 
     # Extract the unique species (elements) used in the system by removing duplicates from the species list
-    unique_species = Set(frame[1]["arrays"]["species"])  # Convert species to a set to remove duplicates
-    species = collect(unique_species)  # Convert the set back into an array (optional, if you need it as an array)
+    species = frame[1]["arrays"]["species"]
+    unique_species = Set(species)  # Convert species to a set to remove duplicates
+    unique_species = collect(unique_species)  # Convert the set back into an array (optional, if you need it as an array)
 
     # Extract cell matrices for each configuration
     all_cells = [frame[i]["cell"] for i in 1:n_of_configs]
@@ -75,19 +76,17 @@ function extract_data(path::String)
     for i in 1:n_of_configs
         for j in 1:atoms_in_a_cell
   
-            # Store charge (mapped from species)
-            dataset[1, j, i] = element_to_charge[frame[i]["arrays"]["species"][j]]
 
             # Store atomic positions (first 3 elements: x, y, z)
-            dataset[2:4, j, i] = frame[i]["arrays"]["pos"][1:3, j]
+            dataset[1:3, j, i] = frame[i]["arrays"]["pos"][1:3, j]
 
             # Store forces (first 3 components: fx, fy, fz)
-            dataset[5:7, j, i] = frame[i]["arrays"]["forces"][1:3, j]
+            dataset[4:6, j, i] = frame[i]["arrays"]["forces"][1:3, j]
         end
     end
 
     # Return the extracted data: number of atoms, species, cell matrices, dataset, and energies
-    return atoms_in_a_cell, species, all_cells, dataset, all_energies
+    return atoms_in_a_cell, species, unique_species, all_cells, dataset, all_energies
 end
 
 
@@ -125,7 +124,7 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
     num_datasets = size(dataset)[3]
 
     # Input array shape: (num_datasets, num_atoms, num_atoms) of type Float32
-    nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, num_atoms)
+    nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, num_atoms-1)
 
     for i in 1:num_datasets
         current_dataset = dataset[:,:,i]
@@ -133,20 +132,18 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
 
         for j in 1:num_atoms
             atom_j = current_dataset[:,j]
-            charge_j = atom_j[1]  # Ensure charge is a scalar value
-            pos_j = atom_j[2:4]
-            # Insert the atom charge into the first slot
-            nn_input[i, j, 1] = charge_j
+            pos_j = atom_j[1:3]
+
 
 
             # Calculate the distance to other atoms
-            slot_index = 2  # Start from the second slot
+            slot_index = 1  # Start from the second slot
             for k in 1:num_atoms
                 if j == k
                     continue  # Skip distance to itself
                 end
                 atom_k = current_dataset[:,k]
-                pos_k = atom_k[2:4]
+                pos_k = atom_k[1:3]
 
                 # Calculate the distance with PBC
                 distance = distance_with_pbc(pos_j, pos_k, lattice_vectors[1])
@@ -159,6 +156,144 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
 
     return nn_input
 end
+
+
+"""
+    data_preprocess(input_data, output_data; split=[0.7, 0.3], verbose=false)
+
+Preprocesses the data by splitting it into training, validation, and test sets, applying Z-score normalization, 
+and moving data to the GPU if available.
+
+# Arguments
+- `input_data`: Input dataset.
+- `output_data`: Output dataset (target values).
+- `split`: A vector specifying the proportions for data splitting (default `[0.7, 0.3]`).
+- `verbose`: If `true`, prints dataset dimensions (default `false`).
+
+# Returns
+A tuple containing:
+- `(x_train, y_train)`: Training set.
+- `(x_val, y_val)`: Validation set.
+- `(x_test, y_test)`: Test set.
+- `y_mean`: Mean of training data (for denormalization).
+- `y_std`: Standard deviation of training data (for denormalization).
+"""
+function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64}, verbose=false)
+    # Convert target to Float32 early
+    target = Float32.(target)
+
+    # Partitioning the dataset in a single step
+    ((x_train, x_val, x_test), (y_train, y_val, y_test)) = partition([input_data, target], split)
+
+    ###### DOUBLE Z-SCORE NORMALIZATION FOR TARGET ######
+
+    # First Z-score normalization
+    y_mean_1 = mean(y_train)
+    y_std_1 = std(y_train, corrected=false)
+    y_train .= (y_train .- y_mean_1) ./ y_std_1
+
+    # Recalculate mean and std after first normalization
+    y_mean_2 = mean(y_train)
+    y_std_2 = std(y_train, corrected=false)
+
+    # Second normalization on already normalized values
+    y_train .= (y_train .- y_mean_2) ./ y_std_2
+
+    # Reconstruct global mean and std (for denormalization or validation/test normalization)
+    y_mean = y_mean_2 * y_std_1 + y_mean_1
+    y_std  = y_std_2 * y_std_1
+
+    # Apply final normalization to val and test using global mean and std
+    y_val .= (y_val .- y_mean) ./ y_std
+    y_test .= (y_test .- y_mean) ./ y_std
+
+    #####################################################
+
+    # GPU check
+    if CUDA.functional()
+        device_name = CUDA.name(CUDA.device())  # Get GPU name
+        x_train, y_train = cu(x_train), cu(y_train)
+        x_val, y_val = cu(x_val), cu(y_val)
+        x_test, y_test = cu(x_test), cu(y_test)
+
+        println("Data successfully mounted on GPU: ", device_name)
+    else
+        println("No GPU available. Data remains on CPU.")
+    end
+
+    # Print dataset dimensions if verbose mode is enabled
+    if verbose
+        println("x_train dimensions: ", size(x_train))
+        println("x_val dimensions: ", size(x_val))
+        println("x_test dimensions: ", size(x_test))
+    end
+
+    return (x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std
+end
+
+
+
+
+
+"""
+    partition(data,parts;shuffle,dims,rng)
+
+Partition (by rows) one or more matrices according to the shares in `parts`.
+
+# Parameters
+* `data`: A matrix/vector or a vector of matrices/vectors
+* `parts`: A vector of the required shares (must sum to 1)
+* `shufle`: Whether to randomly shuffle the matrices (preserving the relative order between matrices)
+* `dims`: The dimension for which to partition [def: `1`]
+* `copy`: Wheter to _copy_ the actual data or only create a reference [def: `true`]
+* `rng`: Random Number Generator (see [`FIXEDSEED`](@ref)) [deafult: `Random.GLOBAL_RNG`]
+
+# Notes:
+* The sum of parts must be equal to 1
+* The number of elements in the specified dimension must be the same for all the arrays in `data`
+
+# Example:
+```julia
+julia> x = [1:10 11:20]
+julia> y = collect(31:40)
+julia> ((xtrain,xtest),(ytrain,ytest)) = partition([x,y],[0.7,0.3])
+ ```
+ """
+function partition(data::AbstractArray{T,1},parts::AbstractArray{Float64,1};shuffle=true,dims=1,copy=true,rng = Random.GLOBAL_RNG) where T <: AbstractArray
+        # the sets of vector/matrices
+        N = size(data[1],dims)
+        all(size.(data,dims) .== N) || @error "All matrices passed to `partition` must have the same number of elements for the required dimension"
+        ridx = shuffle ? Random.shuffle(rng,1:N) : collect(1:N)
+        return partition.(data,Ref(parts);shuffle=shuffle,dims=dims,fixed_ridx = ridx,copy=copy,rng=rng)
+end
+
+function partition(data::AbstractArray{T,Ndims}, parts::AbstractArray{Float64,1};shuffle=true,dims=1,fixed_ridx=Int64[],copy=true,rng = Random.GLOBAL_RNG) where {T,Ndims}
+    # the individual vector/matrix
+    N        = size(data,dims)
+    nParts   = size(parts)
+    toReturn = toReturn = Array{AbstractArray{T,Ndims},1}(undef,nParts)
+    if !(sum(parts) ≈ 1)
+        @error "The sum of `parts` in `partition` should total to 1."
+    end
+    ridx = fixed_ridx
+    if (isempty(ridx))
+       ridx = shuffle ? Random.shuffle(rng, 1:N) : collect(1:N)
+    end
+    allDimIdx = convert(Vector{Union{UnitRange{Int64},Vector{Int64}}},[1:i for i in size(data)])
+    current = 1
+    cumPart = 0.0
+    for (i,p) in enumerate(parts)
+        cumPart += parts[i]
+        final = i == nParts ? N : Int64(round(cumPart*N))
+        allDimIdx[dims] = ridx[current:final]
+        toReturn[i]     = copy ? data[allDimIdx...] : @views data[allDimIdx...]
+        current         = (final +=1)
+    end
+    return toReturn
+end
+
+
+
 
 """
     xyz_to_nn_input(file_path::String)
@@ -192,7 +327,7 @@ function xyz_to_nn_input(file_path::String)
     N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
 
     # Create the neural network input dataset
-    create_nn_input(dataset, all_cells, N_atoms)
+    create_nn_input(dataset, all_cells, N_atoms,species)
 
     # Preprocess data: normalize, split into train, validation, and test sets
     Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)

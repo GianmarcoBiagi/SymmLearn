@@ -11,7 +11,7 @@ using cuDNN
 
 
 include("MLTrain.jl")
-include("ReadFile.jl")
+include("Data_prep.jl")
 
 export xyz_to_nn_input,create_model,train_model!
 

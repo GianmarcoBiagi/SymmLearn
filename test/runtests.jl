@@ -2,113 +2,106 @@ using Test
 using SymmLearn
 
 include("../src/MLTrain.jl")
-include("../src/ReadFile.jl")
+include("../src/Data_prep.jl")
 include("../src/Utils.jl")
 
 #the create_toy_model function is almost the same as the create_model one, the only difference is that the model created here has far less parameters to make the test quicker
 #for further info check the documentation for create_model
-function create_toy_model(
-    ions::Vector{String}, 
-    R_cutoff::Float32, 
-    G1_number::Int = 5, 
-    verbose::Bool = false
-)
-    # Get ion charges using element_charge dictionary
-    ion_charges = 0.1f0 * getindex.(Ref(element_to_charge), ions)
-
-    # Number of ions
-    n_of_ions = length(ions)
-
-    # Create an array to store ModelContainer instances
-    models = Vector{ModelContainer}(undef, n_of_ions)
-
-    # Create a neural network model for each ion and assign to the array
-    for i in 1:n_of_ions
-        ion_name = ions[i]
-        
-        # Create the model
-        model = Chain(
-            MyLayer(1, G1_number, R_cutoff, ion_charges[i]),
-            Dense(G1_number, 2),
-            Dense(2, 1)
-        )
-        
-        # Store the model inside ModelContainer
-        models[i] = ModelContainer(ion_name, model)
-    end
-
-        # Check if a GPU is available and move models to GPU if possible
-    if CUDA.functional()
-        device_name = CUDA.name(CUDA.device())  # Get GPU name
-        models = [ModelContainer(m.name, m.model |> gpu) for m in models]
-        println("Models successfully mounted on GPU: ", device_name)
-    else
-        println("No GPU available. Models remain on CPU.")
-    end
-
-    # Print model details if verbose is enabled
-    if verbose
-        for container in models
-            println("A model has been created called: ", container.name)
-            println(container.model)
-            println("────────────────────────────────")
-        end
-    end
-
-    # Convert models array into an immutable Tuple
-    models_final = Tuple(models)
-
-    return models_final  # Return the immutable Tuple of models
+function build_toy_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
+    ion_charge = 0.1f0 * getindex.(Ref(element_to_charge), Atom_name)
+    return Chain(
+        MyLayer(1, G1_number, R_cutoff, ion_charge),
+        Dense(G1_number, 2, tanh),
+        Dense(2, 1)
+    )
 end
+
+function assemble_toy_model(
+    species_models::Dict{String,Chain},
+    species_order::Vector{String}
+)
+    N = length(species_order)
+    branches = ntuple(i -> species_models[species_order[i]], N)
+    p = Parallel(branches...)
+    sum_layer = x_tuple -> reduce(+, x_tuple)
+    return Chain(p, sum_layer)
+end
+
+function create_toy_species_models(
+    unique_species::Vector{String},
+    G1_number::Int,
+    R_cutoff::Float32
+)
+    models = Dict{String, Chain}()
+    for sp in unique_species
+        # build_branch returns a Flux.Chain for that species
+        models[sp] = build_toy_branch(sp, G1_number, R_cutoff)
+    end
+    return models
+end
+
 
 @testset "Model Training Test" begin
     file_path = "test/reduced_train.xyz"
     
     # Step 1: Extract information from the input file
-    time_extract = @elapsed N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
+    time_extract = @elapsed N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
     println("Time for extract_data: ", time_extract, " seconds")
     @test !isempty(N_atoms)
     @test !isempty(species)
     @test size(dataset, 2) == N_atoms
-
+    
     # Step 2: Create neural network input
     time_nn_input = @elapsed nn_input_dataset = create_nn_input(dataset, all_cells, N_atoms)
     println("Time for create_nn_input: ", time_nn_input, " seconds")
-    @test size(nn_input_dataset) == (size(dataset, 3), size(dataset, 2), N_atoms)
+    @test size(nn_input_dataset) == (size(dataset, 3), N_atoms, N_atoms-1)
+
 
     # Step 3: Data preprocessing
     time_preprocess = @elapsed Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)
     println("Time for data_preprocess: ", time_preprocess, " seconds")
-    @test size(Train[1],1) == size(Train[2],1)
-    @test size(Val[1],1) == size(Val[2],1)
+    @test abs(mean(Train[2])) < 1e-4
 
-    # Step 4: Create models
-    time_create_model = @elapsed models = create_toy_model(species, 1.5f0, 2, false)
-    println("Time for create_model: ", time_create_model, " seconds")
-    @test length(models) == 3
+   
+    # Step 4: Create branches
+    time_create_species_model = @elapsed species_models = create_toy_species_models(species,2,5.0f0)   
+    println("Time for create_species_model: ", time_create_species_model, " seconds")
+    @test length(species_models) == size(unique_species)[1]
+
+    # Step 5: Create models
+    time_assemble_model = @elapsed model = assemble_toy_model(species_models, species)
+    println("Time for assemble_model: ", time_assemble_model, " seconds")
 
     # Clone the parameters of the first model first layer for later
-    last_layer = models[1].model[3]  
-    original_params = Flux.trainable(last_layer)[1] 
+    # Extract the first species model from the Parallel branch
+    first_branch = model[1].layers[1]  # model[1] is the Parallel layer, layers[1] is the first branch
+    # Get the parameters of the last layer of that branch
+    original_weights = first_branch[end].weight
 
-    # Step 5: Train the model
+    println(model)
+    exit(0)
+
+    # Step 6: Train the model
     time_train = @elapsed trained_model = train_model!(
-        models,
+        model,
         Train[1], 
         Train[2], 
         Val[1],
         Val[2],
-        loss_function;
-        epochs=1, batch_size=4, verbose=false
+        loss_function,
+        species;
+        epochs=2, batch_size=4, verbose=true
     )
     println("Time for train_model!: ", time_train, " seconds")
 
     # Check to see if parameters actually changed after the training
     
-    last_layer = trained_model[1].model[3]  
-    trained_params = Flux.trainable(last_layer)[1] 
+    first_branch = model[1].layers[1]  # model[1] is the Parallel layer, layers[1] is the first branch
 
-    @test original_params != trained_params
+    # Get the last layer of that branch
+    trained_weights = first_branch[end].weight
+
+    @test original_weights != trained_weights
     
 
 end

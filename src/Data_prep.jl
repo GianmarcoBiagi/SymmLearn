@@ -21,11 +21,11 @@ A tuple containing the following elements:
 1. `atoms_in_a_cell::Int`: The number of atoms in a single unit cell (assumed to be the same in all the frames).
 2. `species::Vector{String}`: A vector containing the species (elements) present in the system.
 3. `uniqe_species::Vector{String}`: A vector containing the unique species (elements) present in the system.
-4. `all_cells::Array{Float32, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
+4. `all_cells::Array{Float64, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
 5. `dataset::Array{Float32, 3}`: A 3D array with the following data for each configuration:
    - Rows 1-3: Atomic positions (x, y, z)
    - Rows 4-6: Forces acting on atoms (fx, fy, fz)
-6. `all_energies::Vector{Float32}`: A vector containing the total energy for each configuration.
+6. `all_energies::Vector{Float64}`: A vector containing the total energy for each configuration.
 
 ### Functionality:
 1. **Reading the data**: The function first reads the data from the provided path using `read_frames(path)`.
@@ -40,7 +40,7 @@ A tuple containing the following elements:
 
 ### Example Usage:
 ```julia
-atoms_in_a_cell, species, all_cells, dataset, all_energies = extract_data("path/to/data.xyz")
+atoms_in_a_cell, species,unique_species, all_cells, dataset, all_energies = extract_data("path/to/data.xyz")
 """
 
 function extract_data(path::String)
@@ -55,8 +55,6 @@ function extract_data(path::String)
     atoms_in_a_cell = frame[1]["N_atoms"]
 
     # Pre-allocate the arrays to store the extracted data
-    all_energies = zeros(Float32, n_of_configs)  # Array to store energies of each configuration
-    all_cells = zeros(Float32, 3, 3, n_of_configs)  # Array to store cell matrix for each configuration
     dataset = zeros(Float32, 6, atoms_in_a_cell, n_of_configs)  # 3D dataset to store atomic information for each configuration
 
 
@@ -66,12 +64,11 @@ function extract_data(path::String)
     unique_species = collect(unique_species)  # Convert the set back into an array (optional, if you need it as an array)
 
     # Extract cell matrices for each configuration
-    all_cells = [frame[i]["cell"] for i in 1:n_of_configs]
+    all_cells = [Float32.(frame[i]["cell"]) for i in 1:n_of_configs]
 
     # Extract energy values for each configuration
-    all_energies = [frame[i]["info"]["energy"] for i in 1:n_of_configs]
-    
-    
+    all_energies = [Float32.(frame[i]["info"]["energy"]) for i in 1:n_of_configs]
+
     # Extract atom-specific data (charge, position, and forces) for each configuration
     for i in 1:n_of_configs
         for j in 1:atoms_in_a_cell
@@ -105,10 +102,10 @@ Each dataset corresponds to a structure, and each structure consists of a number
 - `num_atoms::Int`: The number of atoms in each structure (the number of atoms per dataset). This value is used to define the shape of the output array.
 
 ### Returns
-- `Array{Float32, 3}`: A 3D array of shape `(num_datasets, num_atoms, num_atoms)` where:
+- `Array{Float32, 3}`: A 3D array of shape `(num_datasets, num_atoms, num_atoms-1)` where:
     - `num_datasets` corresponds to the number of structures in the dataset.
     - `num_atoms` is the number of atoms in each structure.
-    - The elements in the array contain the neural network input, which includes atom charges and distances between pairs of atoms.
+    - The elements in the array contain the neural network input: distances between pairs of atoms.
 
 ### Example
 
@@ -128,7 +125,7 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
 
     for i in 1:num_datasets
         current_dataset = dataset[:,:,i]
-        lattice_vectors = all_lattice[i,:]
+        lattice_vectors = all_lattice[i,:][1]
 
         for j in 1:num_atoms
             atom_j = current_dataset[:,j]
@@ -146,7 +143,7 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
                 pos_k = atom_k[1:3]
 
                 # Calculate the distance with PBC
-                distance = distance_with_pbc(pos_j, pos_k, lattice_vectors[1])
+                distance = distance_with_pbc(pos_j, pos_k, lattice_vectors)
 
                 nn_input[i, j, slot_index] = distance
                 slot_index += 1  # Move to the next slot
@@ -159,24 +156,40 @@ end
 
 
 """
-    data_preprocess(input_data, output_data; split=[0.7, 0.3], verbose=false)
+    data_preprocess(input_data, output_data; split=[0.7, 0.15, 0.15], verbose=false)
 
-Preprocesses the data by splitting it into training, validation, and test sets, applying Z-score normalization, 
-and moving data to the GPU if available.
+Preprocesses the data by splitting it into training, validation, and test sets, applying double Z-score normalization 
+to the target values, and moving data to the GPU if available.
 
 # Arguments
 - `input_data`: Input dataset.
 - `output_data`: Output dataset (target values).
-- `split`: A vector specifying the proportions for data splitting (default `[0.7, 0.3]`).
+- `split`: A vector specifying the proportions for data splitting (default `[0.7, 0.15, 0.15]` for training, validation, and test).
 - `verbose`: If `true`, prints dataset dimensions (default `false`).
 
 # Returns
 A tuple containing:
-- `(x_train, y_train)`: Training set.
-- `(x_val, y_val)`: Validation set.
-- `(x_test, y_test)`: Test set.
+- `(x_train, y_train)`: Training set (with tuples for atom-wise data).
+- `(x_val, y_val)`: Validation set (with tuples for atom-wise data).
+- `(x_test, y_test)`: Test set (with tuples for atom-wise data).
 - `y_mean`: Mean of training data (for denormalization).
 - `y_std`: Standard deviation of training data (for denormalization).
+
+# Description
+- The input data is split into three sets: training, validation, and test based on the `split` argument.
+- The target data (output values) undergoes double Z-score normalization: first using the training set, 
+  then globally using the training mean and standard deviation.
+- The resulting data is converted into tuples for each atom, facilitating efficient neural network processing.
+- If a GPU is available, the data is transferred to the GPU for faster computation.
+
+# Example
+
+```julia
+# Assume `input_data` and `output_data` are your datasets
+(x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std = data_preprocess(input_data, output_data, split=[0.7, 0.15, 0.15])
+println(x_train)
+println(y_train)
+
 """
 function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64})
     # Convert target to Float32 early
@@ -307,23 +320,32 @@ Processes an XYZ file to generate input data for a neural network.
 - `file_path::String`: The path to the XYZ file containing atomic structures and energies.
 
 # Returns
-- `Train`: Training dataset.
-- `Val`: Validation dataset.
-- `Test_data`: Test dataset.
+- `Train`: Training dataset (input-output pairs).
+- `Val`: Validation dataset (input-output pairs).
+- `Test_data`: Test dataset (input-output pairs).
 - `y_mean`: Mean energy value for normalization.
 - `y_std`: Standard deviation of energy values for normalization.
-- `species`: List of atomic species present in the dataset, can be used as an input for the create_model function.
+- `species`: List of atomic species present in the dataset, can be used as an input for the `create_model` function.
 
 # Description
-This function extracts atomic structure and energy information from the input file.
-It then generates an input dataset suitable for neural network training. The data
-is preprocessed, normalized, and split into training, validation, and test sets.
+This function extracts atomic structure and energy information from the input XYZ file.
+It then generates an input dataset suitable for neural network training. The data is preprocessed, 
+normalized, and split into training, validation, and test sets.
 
 # Dependencies
 - `extract_data(file_path)`: Extracts atomic structures, species, cell information, and energies from the input file.
-- `create_nn_input(dataset, all_cells, N_atoms)`: Generates the neural network input dataset.
+- `create_nn_input(dataset, all_cells, N_atoms)`: Generates the neural network input dataset from atomic data.
 - `data_preprocess(nn_input_dataset, all_energies)`: Normalizes and splits the dataset into train, validation, and test sets.
+
+# Example
+
+```julia
+# Assume `file_path` is the path to your XYZ file
+Train, Val, Test_data, y_mean, y_std, species = xyz_to_nn_input("path_to_file.xyz")
+println(Train)
+println(Val)
 """
+
 function xyz_to_nn_input(file_path::String)
 
     # Extract atomic and structural information from the input XYZ file

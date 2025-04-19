@@ -33,6 +33,7 @@ layer = MyLayer(W_eta_example, W_Fs_example, cutoff_example, charge_example)
 
 # Print the values
 println("Layer created: ", layer)
+
 """
 struct MyLayer
     W_eta::AbstractArray  # Weights for the "eta" connection
@@ -40,9 +41,6 @@ struct MyLayer
     cutoff::Float32       # Cutoff radius
     charge::Float32       # Atomic charge
 end
-
-
-
 
 Flux.@layer MyLayer
 
@@ -63,38 +61,47 @@ cutoff radius, and atomic charge. The layer is initialized with random weights f
 """
 function MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32)
     # Initialize weights for eta and Fs with random values
-    W_eta = Float32.(0.25.+2.25.*rand(hidden_dim, input_dim))  # Initialize eta weights (Float32)
-    W_Fs = Float32.(0.25.+2.25.*rand(hidden_dim, input_dim))    # Initialize Fs weights (Float32)
+    W_eta = 0.25f0 .+ 2.25f0 .* rand(Float32, hidden_dim, input_dim)  # Initialize eta weights (Float32)
+    W_Fs = 0.25f0 .+ 2.25f0 .* rand(Float32, hidden_dim, input_dim)   # Initialize Fs weights (Float32)
 
     # Create and return the MyLayer instance
     return MyLayer(W_eta, W_Fs, cutoff, charge)
 end
 
+
+
 """
     (layer::MyLayer)(x)
 
-Forward pass for the custom layer `MyLayer`.
+Forward pass for the custom `MyLayer` neural network layer.
 
-This function calculates the output of the `MyLayer` layer by performing a summation over the neighboring atoms. For each neighboring atom, the function computes a contribution based on the input `x`, the layer's parameters `charge`, `W_Fs`, and `W_eta`, as well as a cutoff function `fc`. The result is summed and returned.
+This function computes the output of `MyLayer` by summing the contributions from all neighboring atoms.
+Each contribution is calculated using the cutoff function `fc`, the difference between the input `x[j]` and the learned
+weights `W_Fs`, the exponential decay weighted by `W_eta`, and scaled by the atomic charge.
 
-### Arguments
-- `layer::MyLayer`: The custom layer object containing weights (`W_eta`, `W_Fs`), charge, and cutoff.
-- `x`: An array representing the positions or other relevant data of the neighboring atoms.
+### Arguments:
+- `layer::MyLayer`: The layer instance containing parameters:
+    - `W_eta`: Weights controlling the decay width of each function.
+    - `W_Fs`: Weights representing the peak positions.
+    - `cutoff`: Cutoff radius applied via the function `fc`.
+    - `charge`: Atomic charge used as a scaling factor.
+- `x`: A 1D array where each element `x[j]` corresponds to a distance (or feature) for a neighboring atom.
 
-### Returns
-- `Float32`: A summed value for the layer's forward pass, calculated as a `Float32`.
+### Returns:
+- A vector of length `hidden_dim` (Float32 elements), representing the output of the layer for the given input.
 
-### Example
+### Example:
 ```julia
-layer = MyLayer(input_dim=5, hidden_dim=3, cutoff=1.5f0, charge=1.0f0)
-x = rand(10)  # Example input for the neighboring atoms
-output = layer(x)  # Forward pass
+layer = MyLayer(1, 5, 2.5f0, 1.0f0)   # Layer with 1 input dim, 5 features, cutoff=2.5, charge=1.0
+x = rand(10)                          # 10 distances to neighboring atoms
+output = layer(x)                    # Forward pass
 println(output)
+
 """
 
 function (layer::MyLayer)(x)
     N_neighboring_atoms = length(x)  # Number of neighboring atoms
-    hidden_dim = size(layer.W_eta, 1)
+    hidden_dim = size(layer.W_eta, 1)   
 
     # Define a function to compute each contribution
     function contribution(j)
@@ -109,18 +116,19 @@ end
 """
     Base.show(io::IO, layer::MyLayer)
 
-Custom implementation of the `show` function for displaying the `MyLayer` object.
+Custom implementation of the `show` function for the `MyLayer` type.
 
-This function allows you to display the `MyLayer` object in a human-readable format. It prints out the weights `W_eta` and `W_Fs` of the layer, as well as a description indicating that this is a custom layer with two links per input neuron.
+This function defines how a `MyLayer` object is displayed when printed. It provides a concise textual summary indicating that this is a custom layer implementing the G1 symmetry functions.
 
-### Arguments
-- `io::IO`: The output stream (e.g., `stdout`, a file, etc.) where the `MyLayer` information will be printed.
-- `layer::MyLayer`: The `MyLayer` object to be displayed.
+### Arguments:
+- `io::IO`: The output stream (e.g., `stdout`, file, etc.) where the information should be printed.
+- `layer::MyLayer`: The `MyLayer` instance to be displayed.
 
-### Example
+### Example:
 ```julia
-layer = MyLayer(input_dim=5, hidden_dim=3, cutoff=1.5f0, charge=1.0f0)
+layer = MyLayer(1, 5, 2.5f0, 1.0f0)
 show(stdout, layer)
+
 """
 
 # Custom implementation of the show function for displaying MyLayer
@@ -136,47 +144,46 @@ end
       species_order::Vector{String}
     ) -> Chain
 
-Constructs a Flux model that applies the correct species‐specific subnetwork
-to each atom in a fixed ordering, then sums their scalar outputs to produce
-one total energy per structure.
+Constructs a composite Flux model that applies the correct species-specific subnetwork
+to each atom in a fixed order, then sums their scalar outputs to produce a total energy
+per structure.
 
-# Arguments
+### Arguments:
 - `species_models::Dict{String,Chain}`  
   A dictionary mapping each atomic species (e.g. `"H"`, `"C"`, `"O"`) to its
-  corresponding `Flux.Chain` subnetwork (as produced by `create_species_models`).
+  corresponding `Flux.Chain` subnetwork (usually created via `create_species_models`).
 
 - `species_order::Vector{String}`  
-  A length‑N vector giving, for atom slots `1…N`, which species occupies that
-  slot.  Must use exactly the same keys as in `species_models`.
+  A length-N vector specifying, for atom slots `1…N`, which species occupies each
+  slot. Must only contain species keys found in `species_models`.
 
-# Returns
+### Returns:
 - `Chain`  
-  A `Flux.Chain` whose first layer is a `Flux.Parallel` of length N branches.
-  Branch `i` is exactly `species_models[species_order[i]]`.  Its output is a
-  tuple of N per‑atom scalars (shape `(batch_size,)` each), which the final
-  anonymous layer sums into one `(batch_size,)` vector of total energies.
+  A `Flux.Chain` where the first layer is a `Flux.Parallel` of N branches,
+  each branch being the model corresponding to that atom’s species. The output is
+  a tuple of N per-atom scalar predictions (shape `(batch_size,)` each), which the
+  final layer reduces into a single `(batch_size,)` vector representing the total
+  energy of each structure.
 
-# Example
-
+### Example:
 ```julia
-# 1) Suppose you have
-species_list  = ["H","C","O"]
+# 1. Define available species and create their models
+species_list = ["H", "C", "O"]
 species_models = create_species_models(species_list, G1_number, R_cutoff)
 
-# 2) And your data always has N=40 atom‐slots, with known species at each slot:
-species_order = ["H","H","O","C", …]  # length 40
+# 2. Define atom types for each position in the input
+species_order = ["H", "H", "O", "C", …]  # length = 40
 
-# 3) Build the full model:
-model = assemble_atomic_model(species_models, species_order)
+# 3. Assemble the full model
+model = assemble_model(species_models, species_order)
 
-# 4) Now `model` expects, as input, a tuple of 40 elements, each of shape
-#    (batch_size, features...), e.g. (x[:,1,:], x[:,2,:], …, x[:,40,:]).
-#    It returns a 1‑D array of length batch_size.
+# 4. Apply to input: a tuple of 40 elements, one per atom
+loss(x, y) = Flux.Losses.mse(model(ntuple(i -> x[:, i, :], 40)), y)
 
-# 5) You can train with:
-loss(x,y) = Flux.Losses.mse(model(ntuple(i-> x[:,i,:], 40)), y)
+# 5. Train
 opt = Flux.Adam(1e-3)
 Flux.train!(loss, params(model), data, opt)
+
 """
 
 function assemble_model(
@@ -227,30 +234,41 @@ end
 
 
 """
-    build_branch(Atom_name::String, G1_number::Float32, R_cutoff::Float32) -> Chain
+    create_species_models(
+        species::Vector{String},
+        G1_number::Int,
+        R_cutoff::Float32
+    ) -> Dict{String, Chain}
 
-Constructs a species-specific neural network branch for a given atom type.
+Creates and returns a dictionary mapping each unique atomic species to its corresponding
+Flux.Chain model. Each model is built using the `build_branch` function, which defines
+a subnetwork architecture specific to that species.
 
-This function returns a `Flux.Chain` model tailored to a specific atomic species, 
-using a custom `MyLayer` followed by several dense layers. The model structure is:
+### Arguments:
+- `species::Vector{String}`:  
+  List of atomic species appearing in the dataset, e.g. `["H", "H", "C", "O", "O", …]`.
 
-- `MyLayer`: Applies element-specific transformations based on pairwise distances, 
-   a cutoff radius, and the ion charge.
-- `Dense` layers: A sequence of fully connected layers with `tanh` activations that process 
-   the atomic descriptor vector to output a scalar energy prediction for the atom.
+- `G1_number::Int`:  
+  Number of symmetry function (G1) features passed to each branch.
 
-# Arguments
-- `Atom_name::String`: The name of the atom (e.g. `"H"`, `"O"`, `"C"`). Used to determine the ion charge via `element_to_charge`.
-- `G1_number::Int`: The number of symmetry functions or features computed by `MyLayer`.
-- `R_cutoff::Float32`: The cutoff radius beyond which atomic interactions are ignored in `MyLayer`.
+- `R_cutoff::Float32`:  
+  Cutoff radius passed to the custom `MyLayer`, used to define interaction range.
 
-# Returns
-- `Flux.Chain`: A model that takes atomic environment features and predicts a per-atom energy contribution.
+### Returns:
+- `Dict{String, Chain}`:  
+  A dictionary mapping each species name to its corresponding Flux.Chain model.
+  For example:  
+  - `dict["H"]` is the model for hydrogen  
+  - `dict["C"]` is the model for carbon  
+  - etc.
 
-# Example
+### Example:
 ```julia
-model = build_branch("O", 6.0f0, 5.0f0)
-output = model(input_vector)  # input_vector should match the expected dimensionality
+species_list = ["H", "C", "O", "H", "O"]
+G1_number = 5
+R_cutoff = 6.0f0
+species_models = create_species_models(species_list, G1_number, R_cutoff)
+
 """
 
 function build_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
@@ -270,31 +288,38 @@ end
 Computes the mean squared error (MSE) loss between predicted and reference total energies.
 
 # Arguments
-- `model : A Flux.Chain object being the model to train.
-- `data::Array`: A 3D array tuple containing N_batch structures, each structure is a 2d array:
-    - The I dimension represents atoms within a structure.
-    - The II dimension contains the atom features.
-- `energies::Vector{Float64}`: A 1D array of reference total energies for each structure.
+- `model::Function`:  
+  A callable model (e.g. a `Flux.Chain`) that maps input structures to predicted energies.
 
+- `data::Vector`:  
+  A vector of structures, where each structure is typically a tuple of atomic features 
+  (e.g. `(x[:,1,:], x[:,2,:], ..., x[:,N,:])`).
+
+- `energies::Vector{Float32}`:  
+  A 1D array of reference total energies, one per structure.
 
 # Returns
-- `Float64`: The mean squared error (MSE) between predicted and reference energies.
+- `Float64`:  
+  The mean squared error (MSE) between predicted and reference energies.
 
 # Notes
-- This function loops over structures and atoms, predicting energy contributions per atom.
-- It automatically selects the correct model based on the atomic charge.
-- The final loss is computed as the mean squared error.
+- This function applies the model to each structure in `data` using broadcasting (`model.(data)`).
+- It assumes the model returns a scalar energy per structure.
+- The final loss is computed as the mean of squared differences.
 
 # Example
 ```julia
-ions = ["Cs", "Pb", "I"]
-models = create_model(ions, R_cutoff=5.0)
+species = ["H", "C", "O"]
+species_order = ["H", "H", "C", "O", ..., "H"]  # length 40
+models = create_species_models(species, 5, 6.0f0)
+model = assemble_model(models, species_order)
 
-data = rand(10, 5, 40)  # Example dataset (10 structures, 5 atoms per structure, 40 features)
-energies = rand(10)     # Example reference energies
+data = [ntuple(i -> rand(Float32, 32), 40) for _ in 1:10]  # batch of 10 structures
+energies = rand(Float32, 10)  # reference energies
 
-loss = loss_function(data, energies, models)
+loss = loss_function(model, data, energies)
 println("Loss: ", loss)
+
 """
 
 
@@ -311,29 +336,63 @@ end
                  initial_lr=0.01f0, min_lr=1e-5, decay_factor=0.5, patience=25, 
                  epochs=3000, batch_size=32, verbose=true)
 
-Trains a set of neural network models for predicting atomic energies.
+Trains a neural network model to predict total energies of atomic structures.
 
 # Arguments
-- ``model : A Flux.Chain object being the model to train.
-- `x_train::Any`: Training data, divided in tuples (structures × atoms × features).
-- `y_train::Vector{Float32}`: Training total energies.
-- `x_val::Any`: Validation data, divided in tuples (same shape as `x_train`).
-- `y_val::Vector{Float32}`: Validation total energies.
-- `loss_function::Function`: Function computing the loss (should be `loss_function(data, energies, models, element_charge)`).
-- `species: array withe the species list of the system.
-- `initial_lr::Float32=0.01`: Initial learning rate for the optimizer.
-- `min_lr::Float32=1e-5`: Minimum learning rate before stopping.
-- `decay_factor::Float32=0.5`: Factor by which learning rate decreases when no improvement.
-- `patience::Int=25`: Number of epochs without improvement before reducing learning rate.
-- `epochs::Int=3000`: Maximum number of training epochs.
-- `batch_size::Int=32`: Batch size for training.
-- `verbose::Bool=true`: Whether to print progress updates.
+- `model::Flux.Chain`:  
+  The model to train (typically combining branches for each species).
+
+- `x_train::Any`:  
+  Training data, as a vector of structures. Each structure is a tuple of atomic features.
+
+- `y_train::Vector{Float32}`:  
+  Ground truth total energies for the training structures.
+
+- `x_val::Any`:  
+  Validation data, same format as `x_train`.
+
+- `y_val::Vector{Float32}`:  
+  Ground truth total energies for the validation structures.
+
+- `loss_function::Function`:  
+  Function that computes the loss as `loss_function(model, data, targets)`.
+
+- `initial_lr::Float32=0.01`:  
+  Initial learning rate for the `Adam` optimizer.
+
+- `min_lr::Float32=1e-5`:  
+  Minimum learning rate before stopping further decay.
+
+- `decay_factor::Float32=0.5`:  
+  Factor by which to reduce the learning rate when validation loss plateaus.
+
+- `patience::Int=25`:  
+  Number of epochs with no significant validation improvement before decaying the learning rate.
+
+- `epochs::Int=3000`:  
+  Maximum number of training epochs.
+
+- `batch_size::Int=32`:  
+  Number of structures per batch during training.
+
+- `verbose::Bool=true`:  
+  Whether to print training status and updates.
 
 # Returns
-- `Dict{String, Chain}`: The trained models.
--  `Vector{Float64}`: the loss on the train data per epoch
--  `Vector{Float64}`: the loss on the validation data per epoch
+- `best_model::Flux.Chain`:  
+  The best-performing model on the validation set.
+
+- `loss_train::Vector{Float64}`:  
+  Training loss per epoch.
+
+- `loss_val::Vector{Float64}`:  
+  Validation loss per epoch.
+
+# Notes
+- The learning rate is adaptively reduced if validation loss does not improve for `patience` epochs.
+- The best model (lowest validation loss) is saved and returned.
 """
+
 function train_model!(
     model,
     x_train::Any, 

@@ -191,81 +191,63 @@ distance = distance_with_pbc(pos1, pos2, lattice_vectors)
 println(distance)  # Output: The distance considering PBC
 """
 
-function distance_with_pbc(pos1::Vector{Float32}, pos2::Vector{Float32}, lattice_vectors::Matrix{Float64})
-    # Calculate the displacement between the two positions
-    displacement = pos2 .- pos1
+function distance_with_pbc(pos1::Vector{Float32}, pos2::Vector{Float32}, lattice_vectors::Matrix{Float32})
+    # Convert cartesian positions to fractional coordinates
+    frac1 = lattice_vectors \ pos1
+    frac2 = lattice_vectors \ pos2
     
-    # Apply periodic boundary conditions by wrapping the displacement within the unit cell
-    for i in 1:3
-        # For each direction, wrap the displacement using the corresponding lattice vector
-        displacement[i] -= round(displacement[i] / lattice_vectors[i, i]) * lattice_vectors[i, i]
-    end
+    # Compute displacement in fractional coordinates and wrap into [-0.5, 0.5)
+    delta_frac = frac2 .- frac1
+    delta_frac = delta_frac .- round.(delta_frac)
     
-    # Calculate the Euclidean distance
-    distance = norm(displacement)
+    # Convert back to cartesian coordinates
+    delta_cart = lattice_vectors * delta_frac
     
-    return distance
+    # Return the Euclidean norm
+    return norm(delta_cart)
 end
+
 
 
 
 """
     fc(Rij::T, Rc::T) :: T where T
 
-Computes a smooth cutoff function for distances between particles. The function returns 0 if the distance `Rij` exceeds the cutoff `Rc`. Otherwise, it computes the function value using a specific formula, which is based on the ratio between `Rij` and `Rc`.
+Computes a smooth cutoff function for distances between particles. The function returns 0 if the distance `Rij` exceeds the cutoff `Rc`. 
+If `Rij` is less than `Rc`, the function computes a smooth transition based on the ratio between `Rij` and `Rc`, using an exponential function. The cutoff is made smoother using a small tolerance (`ε`) to handle edge cases where the value becomes too small.
 
-# Arguments
-- `Rij::T`: The distance between two particles, where `T` is a numeric type (e.g., `Float32` or `Float64`).
+### Arguments
+- `Rij::T`: The distance between two particles (numeric type `T`, e.g., `Float32` or `Float64`).
 - `Rc::T`: The cutoff distance, beyond which the function returns 0.
 
-# Returns
-- A value of type `T`, which is the result of the function based on the given input.
+### Returns
+- A value of type `T`, which is the result of the cutoff function based on the given `Rij` and `Rc`.
 
-# Example
+### Behavior
+- If `Rij >= Rc`, the function returns 0.
+- If `Rij < Rc`, the function applies a smooth exponential transition, with the transition becoming increasingly sharp as `Rij` approaches `Rc`.
+
+### Example
 ```julia
 Rij = 1.0
 Rc = 2.5
 result = fc(Rij, Rc)
 println(result)  # This will output the result of the cutoff function for Rij=1.0 and Rc=2.5.
+
 """
 
 function fc(Rij::T, Rc::T) :: T where T
-    # If the distance Rij is beyond the cutoff Rc, return 0
     if Rij >= Rc
-        return 0
-    else 
-        # Otherwise, compute the value based on the formula
-        arg = 1 - 1 / (1 - (Rij / Rc) * (Rij / Rc))
-
-        return exp(arg)
+        return zero(T)
     end
+
+    ε = eps(T)  
+    denom = 1 - (Rij / Rc)^2
+    if denom < ε
+        return zero(T)
+    end
+
+    arg = 1 - 1 / denom
+    return exp(arg)
 end
-
-"""
-    uniform(a::Float64, b::Float64) -> Float64
-
-Generate a random number from a uniform distribution over the interval [a, b].
-
-# Arguments
-- `a::Float64`: The lower bound of the uniform distribution.
-- `b::Float64`: The upper bound of the uniform distribution.
-
-# Returns
-A random number drawn from the uniform distribution in the interval [a, b].
-
-# Example
-```julia
-random_number = uniform(5.0, 10.0)
-println(random_number)  # Will print a random number between 5 and 10
-
-```julia
-random_number = uniform(2.0, 5.0)
-println(random_number)  # Example output: 3.576
-"""
-
-
-
-
-
-
 

@@ -41,6 +41,9 @@ struct MyLayer
     charge::Float32       # Atomic charge
 end
 
+
+
+
 Flux.@layer MyLayer
 
 """
@@ -90,25 +93,18 @@ println(output)
 """
 
 function (layer::MyLayer)(x)
-    N_neighboring_atoms = length(x)  # Number of neighboring atoms (assuming x represents atom positions or other data)+
-    sum = zeros(Float32, size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
-    
-    # Iterate over each neighboring atom
-    for j in 1:N_neighboring_atoms
-        # Sum the contributions from each neighboring atom
-        
-        if typeof(x[j]) != Float32
-            println("Attenzione, questo non è un Float32: ",x[j])
-            println(x)
-            exit(0)
-        end
-        
-        sum .= sum .+ layer.charge .* fc(x[j], layer.cutoff) .* exp.(-(x[j] .- layer.W_Fs) .^ 2 .* layer.W_eta)
+    N_neighboring_atoms = length(x)  # Number of neighboring atoms
+    hidden_dim = size(layer.W_eta, 1)
+
+    # Define a function to compute each contribution
+    function contribution(j)
+        layer.charge .* fc(x[j], layer.cutoff) .* exp.(-(x[j] .- layer.W_Fs).^2 .* layer.W_eta)
     end
 
-    # Return the result as a Float32 array
-    return sum
+    # Compute the total contribution without mutation
+    return sum(contribution(j) for j in 1:N_neighboring_atoms)
 end
+
 
 """
     Base.show(io::IO, layer::MyLayer)
@@ -275,10 +271,9 @@ Computes the mean squared error (MSE) loss between predicted and reference total
 
 # Arguments
 - `model : A Flux.Chain object being the model to train.
-- `data::Array`: A 3D array where:
-    - The first dimension represents different structures.
-    - The second dimension represents atoms within a structure.
-    - The third dimension contains atomic charge (index 1) and features (index 2 to end).
+- `data::Array`: A 3D array tuple containing N_batch structures, each structure is a 2d array:
+    - The I dimension represents atoms within a structure.
+    - The II dimension contains the atom features.
 - `energies::Vector{Float64}`: A 1D array of reference total energies for each structure.
 
 
@@ -301,25 +296,13 @@ energies = rand(10)     # Example reference energies
 loss = loss_function(data, energies, models)
 println("Loss: ", loss)
 """
-function loss_function(
-    model,  # the model
-    data,       # The features
-    energies::Vector{Float32}     # Reference total energies
-)   
 
-    total_loss = 0.0
-    n_structures = size(data)[1]
 
-    loss=sum(abs2.(map(model,data)-energies))
+function loss_function(model, data, energies::Vector{Float32})
+    mean(abs2.(model.(data) .- energies))
+end
 
-    for k in 1:n_structures
 
-        temp=model(data[k])
-        total_loss+=abs2(temp-energies[k])
-    
-    end
-    return  loss / n_structures # Average Loss
-end 
 
 
 
@@ -332,9 +315,9 @@ Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
 - ``model : A Flux.Chain object being the model to train.
-- `x_train::T`: Training data, divided in tuples (structures × atoms × features).
+- `x_train::Any`: Training data, divided in tuples (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
-- `x_val::T`: Validation data, divided in tuples (same shape as `x_train`).
+- `x_val::Any`: Validation data, divided in tuples (same shape as `x_train`).
 - `y_val::Vector{Float32}`: Validation total energies.
 - `loss_function::Function`: Function computing the loss (should be `loss_function(data, energies, models, element_charge)`).
 - `species: array withe the species list of the system.
@@ -348,30 +331,34 @@ Trains a set of neural network models for predicting atomic energies.
 
 # Returns
 - `Dict{String, Chain}`: The trained models.
+-  `Vector{Float64}`: the loss on the train data per epoch
+-  `Vector{Float64}`: the loss on the validation data per epoch
 """
 function train_model!(
     model,
-    x_train::T, 
+    x_train::Any, 
     y_train::Vector{Float32}, 
-    x_val::T, 
+    x_val::Any, 
     y_val::Vector{Float32}, 
     loss_function::Function;
     initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
     epochs=3000, batch_size=32, verbose=true
-) :: T where T
+)
+
+
     # Initialize optimizer
     opt_state = Flux.setup(Adam(initial_lr), model)
-
 
     # Store best models and best loss
     best_epoch = 0
     best_loss = Inf
-    best_model = deepcopy(model)
+    best_model = nothing
 
     # Loss tracking
     loss_train = zeros(Float32, epochs)
     loss_val = zeros(Float32, epochs)
     no_improve_count = 0
+
     @showprogress for epoch in 1:epochs
         for i in 1:batch_size:size(x_train, 1)
             end_index = min(i + batch_size - 1, size(x_train, 1))
@@ -384,17 +371,19 @@ function train_model!(
         loss_train[epoch] = loss_function(model, x_train, y_train)
         loss_val[epoch] = loss_function(model, x_val, y_val)
 
-        # Save best models
-        if loss_val[epoch] < best_loss * 0.95
+        # Save best model if improved
+        if loss_val[epoch] < best_loss * 0.98
             best_epoch = epoch
             best_loss = loss_val[epoch]
             best_model = deepcopy(model)
+            no_improve_count = 0
+        else
+            no_improve_count += 1
         end
-
 
         # Adjust learning rate if no improvement
         if no_improve_count >= patience
-            new_lr = max(opt.lr * decay_factor, min_lr)
+            new_lr = max(initial_lr * decay_factor, min_lr)
             opt_state = Flux.setup(Adam(new_lr), model)
             no_improve_count = 0
             if verbose
@@ -403,13 +392,12 @@ function train_model!(
         end
     end
 
-
-
     if verbose
-        println("Final Training Loss: $(loss_function(models, x_train, y_train))")
-        println("Final Validation Loss: $(loss_function(models, x_val, y_val))")
+        println("Final Training Loss: $(loss_function(model, x_train, y_train))")
+        println("Final Validation Loss: $(loss_function(model, x_val, y_val))")
         println("The best model was found at epoch: $best_epoch")
     end
 
-    return best_model
+    return best_model, loss_train, loss_val
 end
+

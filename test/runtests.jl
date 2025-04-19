@@ -75,32 +75,43 @@ end
     time_assemble_model = @elapsed model = assemble_toy_model(species_models, species)
     println("Time for assemble_model: ", time_assemble_model, " seconds")
 
-    # Clone the parameters of the first model first layer for later
-    # Extract the first species model from the Parallel branch
-    last_branch = model[1].layers[end] 
-    # Get the parameters of the last layer of that branch
-    original_weights = last_branch[end].weight
+    # Extract all the model parameters
+    params=[]
+    for i in 1:3
+        push!(params, model[1].layers[i][1].W_eta)
+        push!(params, model[1].layers[i][1].W_Fs) 
+        push!(params, model[1].layers[i][2].weight)
+    end
+    flattened_params = vcat([vec(p) for p in params]...)  
+
+
     # Step 6: Train the model
 
-    time_train = @elapsed trained_model = train_model!(
+    time_train = @elapsed trained_model,train_loss,val_loss = train_model!(
         model,
         Train[1], 
         Train[2], 
         Val[1],
         Val[2],
         loss_function;
-        epochs=1, batch_size=4, verbose=true
+         initial_lr=0.1,epochs=2, batch_size=4, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")
 
     # Check to see if parameters actually changed after the training
     
-    last_branch = model[1].layers[end]  # model[1] is the Parallel layer, layers[1] is the first branch
+    trained_params=[]
+    for i in 1:3
+        push!(params, trained_model[1].layers[i][1].W_eta)
+        push!(params, trained_model[1].layers[i][1].W_Fs) 
+        push!(params, trained_model[1].layers[i][2].weight)
+    end
+    flattened_trained_params = vcat([vec(p) for p in params]...)  
 
-    # Get the last layer of that branch
-    trained_weights = last_branch[end].weight
 
-    @test original_weights != trained_weights
+    @test flattened_trained_params != flattened_params
+  
+
     
 
 end

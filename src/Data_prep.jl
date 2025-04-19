@@ -178,7 +178,7 @@ A tuple containing:
 - `y_mean`: Mean of training data (for denormalization).
 - `y_std`: Standard deviation of training data (for denormalization).
 """
-function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64}, verbose=false)
+function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64})
     # Convert target to Float32 early
     target = Float32.(target)
 
@@ -207,28 +207,31 @@ function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Flo
     y_val .= (y_val .- y_mean) ./ y_std
     y_test .= (y_test .- y_mean) ./ y_std
 
-    #####################################################
+
+    #conversion to tuples
+    N_atoms=size(x_train)[2]
+    train_size=size(x_train)[1]
+    test_size=size(x_test)[1]
+    val_size=size(x_val)[1]
+
+    x_train_tuple = [ntuple(j -> view(x_train[i,:,:], j, :, :), N_atoms) for i in 1:train_size]
+    x_test_tuple = [ntuple(j -> view(x_test[i,:,:], j, :, :), N_atoms) for i in 1:test_size]
+    x_val_tuple = [ntuple(j -> view(x_val[i,:,:], j, :, :), N_atoms) for i in 1:val_size]
 
     # GPU check
     if CUDA.functional()
         device_name = CUDA.name(CUDA.device())  # Get GPU name
-        x_train, y_train = cu(x_train), cu(y_train)
-        x_val, y_val = cu(x_val), cu(y_val)
-        x_test, y_test = cu(x_test), cu(y_test)
+        x_train_tuple, y_train = cu(x_train_tuple), cu(y_train)
+        x_val_tuple, y_val = cu(x_val_tuple), cu(y_val)
+        x_test_tuple, y_test = cu(x_test_tuple), cu(y_test)
 
         println("Data successfully mounted on GPU: ", device_name)
     else
         println("No GPU available. Data remains on CPU.")
     end
 
-    # Print dataset dimensions if verbose mode is enabled
-    if verbose
-        println("x_train dimensions: ", size(x_train))
-        println("x_val dimensions: ", size(x_val))
-        println("x_test dimensions: ", size(x_test))
-    end
 
-    return (x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std
+    return (x_train_tuple, y_train), (x_val_tuple, y_val), (x_test_tuple, y_test), y_mean, y_std
 end
 
 
@@ -327,7 +330,7 @@ function xyz_to_nn_input(file_path::String)
     N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
 
     # Create the neural network input dataset
-    create_nn_input(dataset, all_cells, N_atoms,species)
+    create_nn_input(dataset, all_cells, N_atoms)
 
     # Preprocess data: normalize, split into train, validation, and test sets
     Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)

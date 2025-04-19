@@ -7,22 +7,25 @@ include("../src/Utils.jl")
 
 #the create_toy_model function is almost the same as the create_model one, the only difference is that the model created here has far less parameters to make the test quicker
 #for further info check the documentation for create_model
+
+
 function build_toy_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
-    ion_charge = 0.1f0 * getindex.(Ref(element_to_charge), Atom_name)
+    ion_charge = 0.1f0 * element_to_charge[Atom_name]
     return Chain(
         MyLayer(1, G1_number, R_cutoff, ion_charge),
-        Dense(G1_number, 2, tanh),
-        Dense(2, 1)
+        Dense(G1_number, 1)
     )
 end
 
 function assemble_toy_model(
     species_models::Dict{String,Chain},
     species_order::Vector{String}
-)
+)   
+   
     N = length(species_order)
+
     branches = ntuple(i -> species_models[species_order[i]], N)
-    p = Parallel(branches...)
+    p = Parallel(vcat,branches...)
     sum_layer = x_tuple -> reduce(+, x_tuple)
     return Chain(p, sum_layer)
 end
@@ -74,32 +77,28 @@ end
 
     # Clone the parameters of the first model first layer for later
     # Extract the first species model from the Parallel branch
-    first_branch = model[1].layers[1]  # model[1] is the Parallel layer, layers[1] is the first branch
+    last_branch = model[1].layers[end] 
     # Get the parameters of the last layer of that branch
-    original_weights = first_branch[end].weight
-
-    println(model)
-    exit(0)
-
+    original_weights = last_branch[end].weight
     # Step 6: Train the model
+
     time_train = @elapsed trained_model = train_model!(
         model,
         Train[1], 
         Train[2], 
         Val[1],
         Val[2],
-        loss_function,
-        species;
-        epochs=2, batch_size=4, verbose=true
+        loss_function;
+        epochs=1, batch_size=4, verbose=true
     )
     println("Time for train_model!: ", time_train, " seconds")
 
     # Check to see if parameters actually changed after the training
     
-    first_branch = model[1].layers[1]  # model[1] is the Parallel layer, layers[1] is the first branch
+    last_branch = model[1].layers[end]  # model[1] is the Parallel layer, layers[1] is the first branch
 
     # Get the last layer of that branch
-    trained_weights = first_branch[end].weight
+    trained_weights = last_branch[end].weight
 
     @test original_weights != trained_weights
     

@@ -90,12 +90,19 @@ println(output)
 """
 
 function (layer::MyLayer)(x)
-    N_neighboring_atoms = size(x)[1]  # Number of neighboring atoms (assuming x represents atom positions or other data)
+    N_neighboring_atoms = length(x)  # Number of neighboring atoms (assuming x represents atom positions or other data)+
     sum = zeros(Float32, size(layer.W_eta)[1])  # Initialize sum as a zero vector of size hidden_dim
-
+    
     # Iterate over each neighboring atom
     for j in 1:N_neighboring_atoms
         # Sum the contributions from each neighboring atom
+        
+        if typeof(x[j]) != Float32
+            println("Attenzione, questo non è un Float32: ",x[j])
+            println(x)
+            exit(0)
+        end
+        
         sum .= sum .+ layer.charge .* fc(x[j], layer.cutoff) .* exp.(-(x[j] .- layer.W_Fs) .^ 2 .* layer.W_eta)
     end
 
@@ -122,7 +129,7 @@ show(stdout, layer)
 
 # Custom implementation of the show function for displaying MyLayer
 function Base.show(io::IO, layer::MyLayer)
-    print(io, "CustomLayer with two links per input neuron (eta and Fs), uses also the cutoff radius and 0.1*charge of the element as parameters")
+    print(io, "MyLayer(N_atoms-1 => G1_Number, G1 function)")
 end
 
 
@@ -182,7 +189,7 @@ function assemble_model(
 )
     N = length(species_order)
     branches = ntuple(i -> species_models[species_order[i]], N)
-    p = Parallel(branches...)
+    p = Parallel(vcat,branches...)
     sum_layer = x_tuple -> reduce(+, x_tuple)
     return Chain(p, sum_layer)
 end
@@ -296,38 +303,22 @@ println("Loss: ", loss)
 """
 function loss_function(
     model,  # the model
-    data::Array{Float32,3},       # Data: (3,structures, atoms, features)
+    data,       # The features
     energies::Vector{Float32}     # Reference total energies
-) 
+)   
 
     total_loss = 0.0
     n_structures = size(data)[1]
 
+    loss=sum(abs2.(map(model,data)-energies))
+
     for k in 1:n_structures
 
-        temp=model(data)
+        temp=model(data[k])
         total_loss+=abs2(temp-energies[k])
     
     end
-    """
-    
-
-    
-    for k in 1:n_structures # loop on the datasets
-        temp = 0.0
-        n_atoms = size(data)[2] # number of atoms in the structure
-    
-        for i in 1:n_atoms # loop on the atoms of the structure
-
-            features = view(data, k, i, 2:size(data, 3))
-            temp += model(features)[1]
-
-        end
-    
-    total_loss += abs2(temp - energies[k])
-    end
-    """
-    return  total_loss / n_structures # Average Loss
+    return  loss / n_structures # Average Loss
 end 
 
 
@@ -341,9 +332,9 @@ Trains a set of neural network models for predicting atomic energies.
 
 # Arguments
 - ``model : A Flux.Chain object being the model to train.
-- `x_train::Array{Float32,3}`: Training data (structures × atoms × features).
+- `x_train::T`: Training data, divided in tuples (structures × atoms × features).
 - `y_train::Vector{Float32}`: Training total energies.
-- `x_val::Array{Float32,3}`: Validation data (same shape as `x_train`).
+- `x_val::T`: Validation data, divided in tuples (same shape as `x_train`).
 - `y_val::Vector{Float32}`: Validation total energies.
 - `loss_function::Function`: Function computing the loss (should be `loss_function(data, energies, models, element_charge)`).
 - `species: array withe the species list of the system.
@@ -360,17 +351,17 @@ Trains a set of neural network models for predicting atomic energies.
 """
 function train_model!(
     model,
-    x_train::Array{Float32,3}, 
+    x_train::T, 
     y_train::Vector{Float32}, 
-    x_val::Array{Float32,3}, 
+    x_val::T, 
     y_val::Vector{Float32}, 
-    loss_function::Function,
-    species::Array{String};
+    loss_function::Function;
     initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
     epochs=3000, batch_size=32, verbose=true
-)
+) :: T where T
     # Initialize optimizer
     opt_state = Flux.setup(Adam(initial_lr), model)
+
 
     # Store best models and best loss
     best_epoch = 0
@@ -383,16 +374,9 @@ function train_model!(
     no_improve_count = 0
     @showprogress for epoch in 1:epochs
         for i in 1:batch_size:size(x_train, 1)
-            
             end_index = min(i + batch_size - 1, size(x_train, 1))
-            x_batch = x_train[i:end_index, :, :]
+            x_batch = x_train[i:end_index]
             y_batch = y_train[i:end_index]
-            println("output_rete: $(model(x_batch))")
-            exit(0)
-            println("loss: $(loss_function(model,x_batch,y_batch))")
-
-            
-            
             Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
         end
 

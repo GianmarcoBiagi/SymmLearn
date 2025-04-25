@@ -2,8 +2,7 @@ using Flux
 using Random
 using ProgressMeter
 using Statistics
-using CUDA
-using cuDNN
+
 
 """
     struct MyLayer
@@ -136,66 +135,190 @@ function Base.show(io::IO, layer::MyLayer)
     print(io, "MyLayer(N_atoms-1 => G1_Number, G1 function)")
 end
 
+"""
+    DistanceLayer(central_atom_idx::Int; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+
+A custom Flux layer that computes pairwise distances between a central atom and all other atoms
+in a system, optionally using periodic boundary conditions (PBC).
+
+This layer is typically used as the first layer of a branch in a neural network architecture where
+each branch corresponds to one specific atom in a structure. It transforms atomic coordinates into 
+distances, which can be further processed by subsequent neural network layers.
+
+### Arguments
+- `central_atom_idx::Int`: The index of the atom considered as the central atom in this branch.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for applying periodic boundary conditions. 
+  If `nothing`, no PBC is applied.
+
+### Input
+- A tensor of shape `(num_atoms, 3)` representing the atomic positions of a structure.
+
+### Output
+- A vector of shape `(num_atoms - 1,)` containing the distances from the central atom to all other atoms, 
+  excluding the self-distance.
+
+### Notes
+- This layer is **parameter-free** and does not learn during training.
+- Supports optional periodic boundary conditions via `lattice`.
+
+### Example
+
+```julia
+pos = rand(Float32, 5, 3)  # 5 atoms in 3D space
+layer = DistanceLayer(2)  # Focus on atom 2
+output = layer(pos)       # Returns a vector of 4 distances
+"""
+
+struct DistanceLayer
+  central_atom_idx::Int
+  lattice::Union{Nothing, Matrix{Float32}}  # Optional PBC
+end
+
+"""
+(::DistanceLayer)(x::Matrix{Float32}) -> Vector{Float32}
+
+Applies the `DistanceLayer` to a matrix of atomic positions to compute the distances between 
+a central atom and all other atoms in the same structure.
+
+### Arguments
+- `x::Matrix{Float32}`: A matrix of shape `(num_atoms, 3)` where each row represents the 3D coordinates 
+  of an atom in a structure.
+
+### Returns
+- `Vector{Float32}`: A vector of length `num_atoms - 1` containing the distances from the central atom 
+  (specified in the `DistanceLayer`) to every other atom in the structure. The distance to the central atom itself 
+  is excluded.
+
+### Notes
+- If a lattice matrix is specified in the layer, periodic boundary conditions (PBC) are applied using the 
+  minimum image convention.
+- This function assumes atomic positions are in Cartesian coordinates.
+- The order of output distances corresponds to the atom indices in the input, skipping the central atom.
+
+### Example
+
+```julia
+x = rand(Float32, 4, 3)  # 4 atoms in 3D
+layer = DistanceLayer(2)
+distances = layer(x)     # Returns a Vector{Float32} of length 3
+
+"""
+
+function (layer::DistanceLayer)(x::Matrix{Float32})::Vector{Float32}
+  N = size(x, 1)
+  xi = x[layer.central_atom_idx, :]
+
+  return [
+      begin
+          dx = xi .- xj
+
+          # Apply periodic boundary conditions if needed
+          if layer.lattice !== nothing
+              inv_lat = inv(layer.lattice)
+              dx_frac = inv_lat * dx
+              dx_frac = dx_frac .- round.(dx_frac)
+              dx = layer.lattice * dx_frac
+          end
+
+          norm(dx)
+      end
+      for (j, xj) in enumerate(eachrow(x)) if j != layer.central_atom_idx
+  ]
+end
+
+
+
+Flux.@layer DistanceLayer
+
+"""
+    Base.show(io::IO, layer::DistanceLayer)
+
+Custom implementation of the `show` function for the `DistanceLayer` type.
+
+This function defines how a `DistanceLayer` object is displayed when printed.
+
+### Arguments:
+- `io::IO`: The output stream (e.g., `stdout`, file, etc.) where the information should be printed.
+- `layer::DistanceLayer`: The `DistanceLayer` instance to be displayed.
+
+### Example:
+```julia
+layer = DistanceLayer(1, lattice_matrix)
+show(stdout, layer)
+
+"""
+
+function Base.show(io::IO, layer::DistanceLayer)
+  print(io, "DistanceLayer")
+end
+
+
 
 
 """
     assemble_model(
       species_models::Dict{String,Chain},
-      species_order::Vector{String}
+      species_order::Vector{String},
+      lattice::Union{Nothing, Matrix{Float32}} = nothing
     ) -> Chain
 
-Constructs a composite Flux model that applies the correct species-specific subnetwork
-to each atom in a fixed order, then sums their scalar outputs to produce a total energy
-per structure.
+Constructs a composite Flux model that, for each atom in the structure:
+1. Computes interatomic distances from atomic coordinates using `DistanceLayer`.
+2. Applies the appropriate species-specific subnetwork to predict the per-atom energy.
+3. Sums all atomic energies to obtain the total energy per structure.
 
 ### Arguments:
 - `species_models::Dict{String,Chain}`  
-  A dictionary mapping each atomic species (e.g. `"H"`, `"C"`, `"O"`) to its
-  corresponding `Flux.Chain` subnetwork (usually created via `create_species_models`).
+  A dictionary mapping each atomic species (e.g., `"H"`, `"C"`, `"O"`) to its
+  corresponding `Flux.Chain` subnetwork.
 
 - `species_order::Vector{String}`  
-  A length-N vector specifying, for atom slots `1…N`, which species occupies each
-  slot. Must only contain species keys found in `species_models`.
+  A length-N vector specifying, for atom positions `1…N`, which species occupies each
+  slot. Must only contain species keys from `species_models`.
+
+- `lattice::Union{Nothing, Matrix{Float32}} = nothing`  
+  The lattice matrix used for periodic boundary conditions (PBC). If `nothing`, no PBC
+  will be applied. This lattice is shared across all `DistanceLayer`s for simplicity.
 
 ### Returns:
 - `Chain`  
-  A `Flux.Chain` where the first layer is a `Flux.Parallel` of N branches,
-  each branch being the model corresponding to that atom’s species. The output is
-  a tuple of N per-atom scalar predictions (shape `(batch_size,)` each), which the
-  final layer reduces into a single `(batch_size,)` vector representing the total
-  energy of each structure.
+  A Flux model where each branch processes one atom:
+  - `DistanceLayer(i, lattice)` computes distances from atom `i` to all others.
+  - The corresponding species-specific model processes the distances.
+  The outputs (scalars) from all branches are summed to return the total energy.
 
 ### Example:
 ```julia
-# 1. Define available species and create their models
-species_list = ["H", "C", "O"]
+species_list = ["H", "O"]
 species_models = create_species_models(species_list, G1_number, R_cutoff)
-
-# 2. Define atom types for each position in the input
-species_order = ["H", "H", "O", "C", …]  # length = 40
-
-# 3. Assemble the full model
+species_order = ["H", "H", "O"]
 model = assemble_model(species_models, species_order)
 
-# 4. Apply to input: a tuple of 40 elements, one per atom
-loss(x, y) = Flux.Losses.mse(model(ntuple(i -> x[:, i, :], 40)), y)
+# Input `x` should be a tensor of shape (num_atoms, 3, batch_size)
+# Then: model(ntuple(i -> x[i, :, :], num_atoms))
 
-# 5. Train
-opt = Flux.Adam(1e-3)
-Flux.train!(loss, params(model), data, opt)
 
 """
 
 function assemble_model(
-    species_models::Dict{String,Chain},
-    species_order::Vector{String}
+  species_models::Dict{String,Chain},
+  species_order::Vector{String},
+  lattice::Union{Nothing, Matrix{Float32}} = nothing
 )
-    N = length(species_order)
-    branches = ntuple(i -> species_models[species_order[i]], N)
-    p = Parallel(vcat,branches...)
-    sum_layer = x_tuple -> reduce(+, x_tuple)
-    return Chain(p, sum_layer)
+  N = length(species_order)
+
+  branches = ntuple(i -> Chain(
+      DistanceLayer(i, lattice),
+      species_models[species_order[i]]  
+  ), N)
+
+  parallel = Parallel(vcat, branches...)
+  sum_layer = x_tuple -> reduce(+, x_tuple)
+
+  return Chain(parallel, sum_layer)
 end
+
+
 
 
 
@@ -323,9 +446,13 @@ println("Loss: ", loss)
 """
 
 
-function loss_function(model, data, energies::Vector{Float32})
-    mean(abs2.(model.(data) .- energies))
+function loss_function(model, data, energy::Vector{Float32})
+  losses = [abs2(model(data[i, :, :]) - energy[i]) for i in 1:size(data, 1)]
+  return sum(losses) / length(losses)
 end
+
+
+
 
 
 
@@ -394,69 +521,72 @@ Trains a neural network model to predict total energies of atomic structures.
 """
 
 function train_model!(
-    model,
-    x_train::Any, 
-    y_train::Vector{Float32}, 
-    x_val::Any, 
-    y_val::Vector{Float32}, 
-    loss_function::Function;
-    initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
-    epochs=3000, batch_size=32, verbose=true
+  model,
+  x_train::Any, 
+  y_train1::Vector{Dict{Symbol, Any}}, 
+  x_val::Any, 
+  y_val1::Vector{Dict{Symbol, Any}}, 
+  loss_function::Function;
+  initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
+  epochs=3000, batch_size=32, verbose=true
 )
 
+  # Initialize optimizer
+  opt_state = Flux.setup(Adam(initial_lr), model)
 
-    # Initialize optimizer
-    opt_state = Flux.setup(Adam(initial_lr), model)
+  # Store best models and best loss
+  best_epoch = 0
+  best_loss = Inf
+  best_model = nothing
 
-    # Store best models and best loss
-    best_epoch = 0
-    best_loss = Inf
-    best_model = nothing
+  # Loss tracking
+  loss_train = zeros(Float32, epochs)
+  loss_val = zeros(Float32, epochs)
+  no_improve_count = 0
 
-    # Loss tracking
-    loss_train = zeros(Float32, epochs)
-    loss_val = zeros(Float32, epochs)
-    no_improve_count = 0
+  y_train=[t[:energy] for t in y_train1]
+  y_val=[t[:energy] for t in y_val1]
 
-    @showprogress for epoch in 1:epochs
-        for i in 1:batch_size:size(x_train, 1)
-            end_index = min(i + batch_size - 1, size(x_train, 1))
-            x_batch = x_train[i:end_index]
-            y_batch = y_train[i:end_index]
-            Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
-        end
+  @showprogress for epoch in 1:epochs
+      for i in 1:batch_size:size(x_train, 1)
+          end_index = min(i + batch_size - 1, size(x_train, 1))
+          x_batch = x_train[i:end_index,:,:]
+          y_batch = y_train[i:end_index]
+          Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
+      end
 
-        # Compute losses
-        loss_train[epoch] = loss_function(model, x_train, y_train)
-        loss_val[epoch] = loss_function(model, x_val, y_val)
+      # Compute losses for training and validation
+      loss_train[epoch] = loss_function(model, x_train, y_train)
+      loss_val[epoch] = loss_function(model, x_val, y_val)
 
-        # Save best model if improved
-        if loss_val[epoch] < best_loss * 0.98
-            best_epoch = epoch
-            best_loss = loss_val[epoch]
-            best_model = deepcopy(model)
-            no_improve_count = 0
-        else
-            no_improve_count += 1
-        end
+      # Save best model if improved
+      if loss_val[epoch] < best_loss * 0.98
+          best_epoch = epoch
+          best_loss = loss_val[epoch]
+          best_model = deepcopy(model)
+          no_improve_count = 0
+      else
+          no_improve_count += 1
+      end
 
-        # Adjust learning rate if no improvement
-        if no_improve_count >= patience
-            new_lr = max(initial_lr * decay_factor, min_lr)
-            opt_state = Flux.setup(Adam(new_lr), model)
-            no_improve_count = 0
-            if verbose
-                println("Reducing learning rate to $(new_lr) at epoch $epoch")
-            end
-        end
-    end
+      # Adjust learning rate if no improvement
+      if no_improve_count >= patience
+          new_lr = max(initial_lr * decay_factor, min_lr)
+          opt_state = Flux.setup(Adam(new_lr), model)
+          no_improve_count = 0
+          if verbose
+              println("Reducing learning rate to $(new_lr) at epoch $epoch")
+          end
+      end
+  end
 
-    if verbose
-        println("Final Training Loss: $(loss_function(model, x_train, y_train))")
-        println("Final Validation Loss: $(loss_function(model, x_val, y_val))")
-        println("The best model was found at epoch: $best_epoch")
-    end
+  if verbose
+      println("Final Training Loss: $(loss_function(model, x_train, y_train))")
+      println("Final Validation Loss: $(loss_function(model, x_val, y_val))")
+      println("The best model was found at epoch: $best_epoch")
+  end
 
-    return best_model, loss_train, loss_val
+  return best_model, loss_train, loss_val
 end
+
 

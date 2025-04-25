@@ -89,65 +89,41 @@ end
 
 
 """
-    create_nn_input(dataset, all_lattice, num_atoms::Int)
+    create_nn_input(dataset, num_atoms::Int32)
 
-This function processes a dataset of atomic information and lattice vectors to create an input array for a neural network. 
-The array contains the charges, positions, and pairwise distances between atoms in a periodic box. 
-Each dataset corresponds to a structure, and each structure consists of a number of atoms specified by `num_atoms`.
+This function processes a dataset of atomic information and extracts the atomic coordinates 
+for each atom in each structure. This is used as input for a neural network model that requires 
+Cartesian coordinates.
 
 ### Arguments
-- `dataset::Array{Array{T}}`: A list of datasets, where each dataset corresponds to a structure.
-    - Each dataset is a list of atoms, with each atom represented by a vector containing its charge and positions (x, y, z).
-- `all_lattice::Array{Array{T}}`: A list of lattice vectors corresponding to each structure in `dataset`. Each lattice vector is used for periodic boundary conditions when calculating distances.
-- `num_atoms::Int`: The number of atoms in each structure (the number of atoms per dataset). This value is used to define the shape of the output array.
+- `dataset::Array{Float32, 3}`: A 3D array where each slice along the third dimension is a structure, 
+  each structure is a matrix of shape (3, num_atoms).
+- `num_atoms::Int`: Number of atoms per structure.
 
 ### Returns
-- `Array{Float32, 3}`: A 3D array of shape `(num_datasets, num_atoms, num_atoms-1)` where:
-    - `num_datasets` corresponds to the number of structures in the dataset.
-    - `num_atoms` is the number of atoms in each structure.
-    - The elements in the array contain the neural network input: distances between pairs of atoms.
+- `Array{Float32, 3}`: A 3D array of shape `(num_datasets, num_atoms, 3)` where:
+    - `num_datasets` is the number of structures in the dataset.
+    - Each `num_atoms x 3` slice contains the Cartesian coordinates of all atoms in a structure.
 
 ### Example
-
 ```julia
-# Assume `dataset` contains atomic data and `all_lattice` contains corresponding lattice matrices
-nn_input = create_nn_input(dataset, all_lattice, num_atoms=40)
-println(nn_input)
+coord_input = create_nn_input(dataset, num_atoms=40)
+println(coord_input[1, :, :])  # Prints coordinates of all atoms in the first structure
+
 
 """
 
-# Function to create the neural network input array
-function create_nn_input(dataset, all_lattice, num_atoms::Int32)
-    num_datasets = size(dataset)[3]
+function create_nn_input(dataset::Array{Float32, 3}, num_atoms::Int32)
+    num_datasets = size(dataset, 3)
 
-    # Input array shape: (num_datasets, num_atoms, num_atoms) of type Float32
-    nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, num_atoms-1)
+    # Output array: (num_datasets, num_atoms, 3)
+    nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, 3)
 
     for i in 1:num_datasets
-        current_dataset = dataset[:,:,i]
-        lattice_vectors = all_lattice[i,:][1]
-
+        current_structure = dataset[:, :, i]
         for j in 1:num_atoms
-            atom_j = current_dataset[:,j]
-            pos_j = atom_j[1:3]
-
-
-
-            # Calculate the distance to other atoms
-            slot_index = 1  # Start from the second slot
-            for k in 1:num_atoms
-                if j == k
-                    continue  # Skip distance to itself
-                end
-                atom_k = current_dataset[:,k]
-                pos_k = atom_k[1:3]
-
-                # Calculate the distance with PBC
-                distance = distance_with_pbc(pos_j, pos_k, lattice_vectors)
-
-                nn_input[i, j, slot_index] = distance
-                slot_index += 1  # Move to the next slot
-            end
+            pos = current_structure[1:3, j]  # Coordinates assumed to be in columns 2, 3, 4
+            nn_input[i, j, :] = pos
         end
     end
 
@@ -155,97 +131,124 @@ function create_nn_input(dataset, all_lattice, num_atoms::Int32)
 end
 
 
-"""
-    data_preprocess(input_data, output_data; split=[0.7, 0.15, 0.15], verbose=false)
 
-Preprocesses the data by splitting it into training, validation, and test sets, applying double Z-score normalization 
-to the target values, and moving data to the GPU if available.
+"""
+    create_nn_target(dataset, all_energies)
+
+Creates a structured target array for neural network training.
 
 # Arguments
-- `input_data`: Input dataset.
-- `output_data`: Output dataset (target values).
-- `split`: A vector specifying the proportions for data splitting (default `[0.7, 0.15, 0.15]` for training, validation, and test).
-- `verbose`: If `true`, prints dataset dimensions (default `false`).
+- `dataset::Array{Float32,3}`: A 3D array of shape (features, atoms, samples). Forces are assumed to be at indices 4:6 along the first axis.
+- `all_energies::Vector{Float32}`: A 1D array of total energies for each sample, of length equal to size(dataset, 3).
+
+# Returns
+- `targets::Vector{Dict}`: A vector of dictionaries, one for each sample.
+  Each dictionary contains:
+    - `:energy`: the total energy of the system
+    - `:forces`: a flat Vector{Float32} with all atomic forces concatenated (3 values per atom)
+
+"""
+function create_nn_target(dataset::Array{Float32,3}, all_energies::Vector{Float32})
+    num_samples = size(dataset, 3)   # Number of systems
+    num_atoms = size(dataset, 2)     # Number of atoms per system
+
+    # Extract forces: shape will be (samples, atoms, 3)
+    all_forces = permutedims(dataset[4:6, :, :], (3, 2, 1))
+
+    targets = Vector{Dict}(undef, num_samples)
+
+    for i in 1:num_samples
+        # Flatten the (atoms, 3) matrix of forces into a single vector
+        forces_vec = vec(all_forces[i, :, :])
+
+        # Store energy and forces in a dictionary
+        targets[i] = Dict(
+            :energy => all_energies[i],
+            :forces => forces_vec
+        )
+    end
+
+    return targets
+end
+
+
+
+"""
+    data_preprocess(input_data, target; split=[0.7, 0.15, 0.15])
+
+Preprocesses input and target data for training a neural network model. It splits the dataset, 
+performs separate normalization for energies and forces, and structures the output.
+
+# Arguments
+- `input_data`: Input features (e.g. atomic environments), shaped as `(n_structures, n_atoms, ...)`.
+- `target`: A vector of dictionaries where each entry has:
+    - `:energy`: total system energy (Float32).
+    - `:forces`: vector of forces for each atom (Float32 vector of length 3 * n_atoms).
+- `split`: A vector of Float64 values indicating train/validation/test split proportions (default `[0.7, 0.15, 0.15]`).
 
 # Returns
 A tuple containing:
-- `(x_train, y_train)`: Training set (with tuples for atom-wise data).
-- `(x_val, y_val)`: Validation set (with tuples for atom-wise data).
-- `(x_test, y_test)`: Test set (with tuples for atom-wise data).
-- `y_mean`: Mean of training data (for denormalization).
-- `y_std`: Standard deviation of training data (for denormalization).
+- `(x_train, y_train)`: Training input and target.
+- `(x_val, y_val)`: Validation input and target.
+- `(x_test, y_test)`: Test input and target.
+- `energy_mean, energy_std`: Mean and standard deviation used for energy normalization.
+- `forces_mean, forces_std`: Mean and standard deviation used for force normalization.
 
-# Description
-- The input data is split into three sets: training, validation, and test based on the `split` argument.
-- The target data (output values) undergoes double Z-score normalization: first using the training set, 
-  then globally using the training mean and standard deviation.
-- The resulting data is converted into tuples for each atom, facilitating efficient neural network processing.
-- If a GPU is available, the data is transferred to the GPU for faster computation.
-
-# Example
-
-```julia
-# Assume `input_data` and `output_data` are your datasets
-(x_train, y_train), (x_val, y_val), (x_test, y_test), y_mean, y_std = data_preprocess(input_data, output_data, split=[0.7, 0.15, 0.15])
-println(x_train)
-println(y_train)
+# Notes
+- Energies undergo a double Z-score normalization.
+- Forces are normalized using standard Z-score.
 
 """
-function data_preprocess(input_data, target; split=[0.7, 0.15, 0.15]::Vector{Float64})
-    # Convert target to Float32 early
-    target = Float32.(target)
+function data_preprocess(input_data, target; split=[0.6, 0.2, 0.2]::Vector{Float64})
 
-    # Partitioning the dataset in a single step
-    ((x_train, x_val, x_test), (y_train, y_val, y_test)) = partition([input_data, target], split)
+    ##### --- Extract energy and forces --- #####
+    energies = Float32[entry[:energy] for entry in target]
+    forces   = [entry[:forces] for entry in target]  # Each is a vector of 3 * n_atoms
 
-    ###### DOUBLE Z-SCORE NORMALIZATION FOR TARGET ######
+    # Convert list of force vectors into a matrix (each row = one structure)
+    force_matrix = reduce(hcat, forces)'  # Shape: (n_structures, 3 * n_atoms)
+    force_matrix = Float32.(force_matrix)
 
-    # First Z-score normalization
-    y_mean_1 = mean(y_train)
-    y_std_1 = std(y_train, corrected=false)
-    y_train .= (y_train .- y_mean_1) ./ y_std_1
+    ##### --- Split dataset --- #####
+    ((x_train, x_val, x_test), 
+     (e_train, e_val, e_test), 
+     (f_train, f_val, f_test)) = partition([input_data, energies, force_matrix], split)
 
-    # Recalculate mean and std after first normalization
-    y_mean_2 = mean(y_train)
-    y_std_2 = std(y_train, corrected=false)
+    ##### --- ENERGY: Double Z-score normalization --- #####
+    e_mean1 = mean(e_train)
+    e_std1  = std(e_train, corrected=false)
+    e_train .= (e_train .- e_mean1) ./ e_std1
 
-    # Second normalization on already normalized values
-    y_train .= (y_train .- y_mean_2) ./ y_std_2
+    e_mean2 = mean(e_train)
+    e_std2  = std(e_train, corrected=false)
+    e_train .= (e_train .- e_mean2) ./ e_std2
 
-    # Reconstruct global mean and std (for denormalization or validation/test normalization)
-    y_mean = y_mean_2 * y_std_1 + y_mean_1
-    y_std  = y_std_2 * y_std_1
+    # Final energy normalization constants (used for denormalization)
+    energy_mean = e_mean2 * e_std1 + e_mean1
+    energy_std  = e_std2 * e_std1
 
-    # Apply final normalization to val and test using global mean and std
-    y_val .= (y_val .- y_mean) ./ y_std
-    y_test .= (y_test .- y_mean) ./ y_std
+    # Apply same global normalization to val and test
+    e_val  .= (e_val .- energy_mean) ./ energy_std
+    e_test .= (e_test .- energy_mean) ./ energy_std
 
+    ##### --- FORCES: Standard Z-score normalization --- #####
+    all_train_forces = reduce(vcat, eachrow(f_train))
+    forces_mean = mean(all_train_forces)
+    forces_std  = std(all_train_forces, corrected=false)
 
-    #conversion to tuples
-    N_atoms=size(x_train)[2]
-    train_size=size(x_train)[1]
-    test_size=size(x_test)[1]
-    val_size=size(x_val)[1]
+    f_train .= (f_train .- forces_mean) ./ forces_std
+    f_val   .= (f_val   .- forces_mean) ./ forces_std
+    f_test  .= (f_test  .- forces_mean) ./ forces_std
 
-    x_train_tuple = [ntuple(j -> view(x_train[i,:,:], j, :, :), N_atoms) for i in 1:train_size]
-    x_test_tuple = [ntuple(j -> view(x_test[i,:,:], j, :, :), N_atoms) for i in 1:test_size]
-    x_val_tuple = [ntuple(j -> view(x_val[i,:,:], j, :, :), N_atoms) for i in 1:val_size]
+    ##### --- Repack normalized targets --- #####
+    y_train = [Dict(:energy => e_train[i], :forces => f_train[i, :]) for i in 1:length(e_train)]
+    y_val   = [Dict(:energy => e_val[i],   :forces => f_val[i, :])   for i in 1:length(e_val)]
+    y_test  = [Dict(:energy => e_test[i],  :forces => f_test[i, :])  for i in 1:length(e_test)]
 
-    # GPU check
-    if CUDA.functional()
-        device_name = CUDA.name(CUDA.device())  # Get GPU name
-        x_train_tuple, y_train = cu(x_train_tuple), cu(y_train)
-        x_val_tuple, y_val = cu(x_val_tuple), cu(y_val)
-        x_test_tuple, y_test = cu(x_test_tuple), cu(y_test)
-
-        println("Data successfully mounted on GPU: ", device_name)
-    else
-        println("No GPU available. Data remains on CPU.")
-    end
-
-
-    return (x_train_tuple, y_train), (x_val_tuple, y_val), (x_test_tuple, y_test), y_mean, y_std
+    ##### --- Return --- #####
+    return (x_train, y_train), (x_val, y_val), (x_test, y_test), energy_mean, energy_std, forces_mean, forces_std
 end
+
 
 
 
@@ -352,11 +355,16 @@ function xyz_to_nn_input(file_path::String)
     N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
 
     # Create the neural network input dataset
-    create_nn_input(dataset, all_cells, N_atoms)
+    nn_input_dataset = create_nn_input(dataset, all_cells, N_atoms)
+
+    #Create the neural network target 
+
+    target = create_nn_target(dataset, all_energies)
+  
 
     # Preprocess data: normalize, split into train, validation, and test sets
-    Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)
+    Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, target)
     
     # Return the processed datasets and normalization parameters
-    return (Train, Val, Test_data, y_mean, y_std, species)
+    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std)
 end

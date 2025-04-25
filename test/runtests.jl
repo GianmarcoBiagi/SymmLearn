@@ -17,18 +17,6 @@ function build_toy_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
     )
 end
 
-function assemble_toy_model(
-    species_models::Dict{String,Chain},
-    species_order::Vector{String}
-)   
-   
-    N = length(species_order)
-
-    branches = ntuple(i -> species_models[species_order[i]], N)
-    p = Parallel(vcat,branches...)
-    sum_layer = x_tuple -> reduce(+, x_tuple)
-    return Chain(p, sum_layer)
-end
 
 function create_toy_species_models(
     unique_species::Vector{String},
@@ -53,39 +41,51 @@ end
     @test !isempty(N_atoms)
     @test !isempty(species)
     @test size(dataset, 2) == N_atoms
+
+
     
     # Step 2: Create neural network input
-    time_nn_input = @elapsed nn_input_dataset = create_nn_input(dataset, all_cells, N_atoms)
+    time_nn_input = @elapsed nn_input_dataset = create_nn_input(dataset, N_atoms)
     println("Time for create_nn_input: ", time_nn_input, " seconds")
-    @test size(nn_input_dataset) == (size(dataset, 3), N_atoms, N_atoms-1)
+    @test size(nn_input_dataset) == (size(dataset, 3), N_atoms, 3)
 
 
-    # Step 3: Data preprocessing
-    time_preprocess = @elapsed Train, Val, Test_data, y_mean, y_std = data_preprocess(nn_input_dataset, all_energies)
+    # Step 3: Create neural network target
+    time_nn_target = @elapsed target = create_nn_target(dataset, all_energies)
+    println("Time for create_nn_target: ", time_nn_target, " seconds")
+
+
+    # Step 4: Data preprocessing
+    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, target)
     println("Time for data_preprocess: ", time_preprocess, " seconds")
-    @test abs(mean(Train[2])) < 1e-4
 
-   
-    # Step 4: Create branches
+    all_energies = [t[:energy] for t in Train[2]]
+    all_forces = [t[:forces] for t in Train[2]]
+    @test abs(mean(vcat(all_forces...))) < 1e-4
+    @test abs(mean(all_energies)) < 1e-4
+
+    
+
+    # Step 5: Create branches
     time_create_species_model = @elapsed species_models = create_toy_species_models(species,2,5.0f0)   
     println("Time for create_species_model: ", time_create_species_model, " seconds")
     @test length(species_models) == size(unique_species)[1]
 
-    # Step 5: Create models
-    time_assemble_model = @elapsed model = assemble_toy_model(species_models, species)
+    # Step 6: Create models
+    time_assemble_model = @elapsed model = assemble_model(species_models, species,all_cells[1])
     println("Time for assemble_model: ", time_assemble_model, " seconds")
+
 
     # Extract all the model parameters
     params=[]
     for i in 1:3
-        push!(params, model[1].layers[i][1].W_eta)
-        push!(params, model[1].layers[i][1].W_Fs) 
-        push!(params, model[1].layers[i][2].weight)
+        push!(params, model[1].layers[i][2][1].W_eta)
+        push!(params, model[1].layers[i][2][1].W_Fs) 
+        push!(params, model[1].layers[i][2][2].weight)
     end
     flattened_params = vcat([vec(p) for p in params]...)  
 
-
-    # Step 6: Train the model
+    # Step 7: Train the model
 
     time_train = @elapsed trained_model,train_loss,val_loss = train_model!(
         model,
@@ -102,9 +102,9 @@ end
     
     trained_params=[]
     for i in 1:3
-        push!(params, trained_model[1].layers[i][1].W_eta)
-        push!(params, trained_model[1].layers[i][1].W_Fs) 
-        push!(params, trained_model[1].layers[i][2].weight)
+        push!(params, trained_model[1].layers[i][2][1].W_eta)
+        push!(params, trained_model[1].layers[i][2][1].W_Fs) 
+        push!(params, trained_model[1].layers[i][2][2].weight)
     end
     flattened_trained_params = vcat([vec(p) for p in params]...)  
 

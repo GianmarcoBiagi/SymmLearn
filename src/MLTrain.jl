@@ -2,7 +2,7 @@ using Flux
 using Random
 using ProgressMeter
 using Statistics
-
+using Zygote
 
 """
     struct MyLayer
@@ -72,185 +72,134 @@ end
 """
     (layer::MyLayer)(x)
 
-Forward pass for the custom `MyLayer` neural network layer.
+Forward pass for the custom `MyLayer` neural network layer over a batch of inputs.
 
-This function computes the output of `MyLayer` by summing the contributions from all neighboring atoms.
-Each contribution is calculated using the cutoff function `fc`, the difference between the input `x[j]` and the learned
-weights `W_Fs`, the exponential decay weighted by `W_eta`, and scaled by the atomic charge.
+This function computes the output of `MyLayer` by summing the contributions from all neighboring atoms 
+for each sample in the batch. Each contribution is calculated using the cutoff function `fc`, the difference 
+between the input `x` and the learned weights `W_Fs`, the exponential decay weighted by `W_eta`, 
+and scaled by the atomic charge.
 
 ### Arguments:
 - `layer::MyLayer`: The layer instance containing parameters:
-    - `W_eta`: Weights controlling the decay width of each function.
-    - `W_Fs`: Weights representing the peak positions.
+    - `W_eta`: Weights controlling the decay width of each function, shape `(hidden_dim, input_dim)`.
+    - `W_Fs`: Weights representing the peak positions, shape `(hidden_dim, input_dim)`.
     - `cutoff`: Cutoff radius applied via the function `fc`.
     - `charge`: Atomic charge used as a scaling factor.
-- `x`: A 1D array where each element `x[j]` corresponds to a distance (or feature) for a neighboring atom.
+- `x`: A 2D array of shape `(batch_size, N_neighbors)` where each row corresponds to one sample's distances
+  to neighboring atoms.
 
 ### Returns:
-- A vector of length `hidden_dim` (Float32 elements), representing the output of the layer for the given input.
+- A 2D array of shape `(hidden_dim, batch_size)` containing the output activations for each batch sample.
 
 ### Example:
 ```julia
-layer = MyLayer(1, 5, 2.5f0, 1.0f0)   # Layer with 1 input dim, 5 features, cutoff=2.5, charge=1.0
-x = rand(10)                          # 10 distances to neighboring atoms
-output = layer(x)                    # Forward pass
+layer = MyLayer(1, 5, 2.5f0, 1.0f0)  # Layer with 1 input dim, 5 features, cutoff=2.5, charge=1.0
+x = rand(Float32, 3, 10)             # Batch of 3 samples, each with 10 distances
+output = layer(x)                    # Forward pass producing output of shape (3, 5)
 println(output)
-
 """
 
-function (layer::MyLayer)(x)
-    N_neighboring_atoms = length(x)  # Number of neighboring atoms
-    hidden_dim = size(layer.W_eta, 1)   
+function (layer::MyLayer)(x::AbstractMatrix{Float32})  # x shape: (batch_size, N_neighbors)
+    batch_size, N_neighbors = size(x)
+    hidden_dim, input_dim = size(layer.W_eta)  # input_dim should be 1 here
 
-    # Define a function to compute each contribution
-    function contribution(j)
-        layer.charge .* fc(x[j], layer.cutoff) .* exp.(-(x[j] .- layer.W_Fs).^2 .* layer.W_eta)
-    end
+    # Reshape x to (batch_size, 1, N_neighbors) to broadcast with weights (hidden_dim, 1)
+    # Actually we want to broadcast over hidden_dim, batch_size, N_neighbors
 
-    # Compute the total contribution without mutation
-    return sum(contribution(j) for j in 1:N_neighboring_atoms)
+    # Expand weights W_eta and W_Fs from (hidden_dim, input_dim=1) to (hidden_dim, batch_size, N_neighbors)
+    # Expand x from (batch_size, N_neighbors) to (1, batch_size, N_neighbors)
+
+    # Use broadcasting:
+  
+
+    x_expanded = reshape(x, 1, batch_size, N_neighbors)          # (1, batch_size, N_neighbors)
+    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)       # (hidden_dim, 1, 1)
+    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)     # (hidden_dim, 1, 1)
+
+    # Compute fc(x), assuming fc is scalar function applied elementwise
+    fc_x = fc.(x_expanded, layer.cutoff)                         # (1, batch_size, N_neighbors)
+
+    # Broadcast calculation
+    # diff squared: (x - W_Fs)^2
+    diff_sq = (x_expanded .- W_Fs_expanded) .^ 2                # (hidden_dim, batch_size, N_neighbors)
+
+    # exponent term
+    exp_term = exp.(-diff_sq .* W_eta_expanded)                  # (hidden_dim, batch_size, N_neighbors)
+
+    # total contribution per hidden_dim, batch, neighbor
+    contribution = layer.charge .* fc_x .* exp_term              # broadcasting fc_x (1,batch,neighbors) over hidden_dim
+
+    # sum over neighbors axis (3rd dim)
+    sum_over_neighbors = sum(contribution, dims=3)               # shape (hidden_dim, batch_size, 1)
+
+    # permute dims to (batch_size, hidden_dim)
+    output = permutedims(dropdims(sum_over_neighbors, dims=3), (2, 1))  # (batch_size, hidden_dim)
+    return output'
 end
 
-
 """
-    Base.show(io::IO, layer::MyLayer)
+    distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing) -> Array{Float32, 2}
 
-Custom implementation of the `show` function for the `MyLayer` type.
+Compute distances between a central atom and all other atoms in a batch of atomic structures.
 
-This function defines how a `MyLayer` object is displayed when printed. It provides a concise textual summary indicating that this is a custom layer implementing the G1 symmetry functions.
-
-### Arguments:
-- `io::IO`: The output stream (e.g., `stdout`, file, etc.) where the information should be printed.
-- `layer::MyLayer`: The `MyLayer` instance to be displayed.
-
-### Example:
-```julia
-layer = MyLayer(1, 5, 2.5f0, 1.0f0)
-show(stdout, layer)
-
-"""
-
-# Custom implementation of the show function for displaying MyLayer
-function Base.show(io::IO, layer::MyLayer)
-    print(io, "MyLayer(N_atoms-1 => G1_Number, G1 function)")
-end
-
-"""
-    DistanceLayer(central_atom_idx::Int; lattice::Union{Nothing, Matrix{Float32}}=nothing)
-
-A custom Flux layer that computes pairwise distances between a central atom and all other atoms
-in a system, optionally using periodic boundary conditions (PBC).
-
-This layer is typically used as the first layer of a branch in a neural network architecture where
-each branch corresponds to one specific atom in a structure. It transforms atomic coordinates into 
-distances, which can be further processed by subsequent neural network layers.
+This function is typically used as a preprocessing step in atom-centered neural network models.
+It calculates the pairwise distances between a specified central atom and all other atoms
+in each structure of a batch. Optional periodic boundary conditions (PBC) are supported.
 
 ### Arguments
-- `central_atom_idx::Int`: The index of the atom considered as the central atom in this branch.
-- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for applying periodic boundary conditions. 
-  If `nothing`, no PBC is applied.
-
-### Input
-- A tensor of shape `(num_atoms, 3)` representing the atomic positions of a structure.
-
-### Output
-- A vector of shape `(num_atoms - 1,)` containing the distances from the central atom to all other atoms, 
-  excluding the self-distance.
-
-### Notes
-- This layer is **parameter-free** and does not learn during training.
-- Supports optional periodic boundary conditions via `lattice`.
-
-### Example
-
-```julia
-pos = rand(Float32, 5, 3)  # 5 atoms in 3D space
-layer = DistanceLayer(2)  # Focus on atom 2
-output = layer(pos)       # Returns a vector of 4 distances
-"""
-
-struct DistanceLayer
-  central_atom_idx::Int
-  lattice::Union{Nothing, Matrix{Float32}}  # Optional PBC
-end
-
-"""
-(::DistanceLayer)(x::Matrix{Float32}) -> Vector{Float32}
-
-Applies the `DistanceLayer` to a matrix of atomic positions to compute the distances between 
-a central atom and all other atoms in the same structure.
-
-### Arguments
-- `x::Matrix{Float32}`: A matrix of shape `(num_atoms, 3)` where each row represents the 3D coordinates 
-  of an atom in a structure.
+- `x::Array{Float32, 3}`: A tensor of shape `(batch_size, num_atoms, 3)`, where each structure contains `num_atoms` atoms with 3D coordinates.
+- `central_atom_idx::Int`: Index of the central atom in each structure (1-based indexing).
+- `lattice::Union{Nothing, Matrix{Float32}}=nothing`: Optional 3×3 lattice matrix. If provided, PBC are applied using the minimum image convention.
 
 ### Returns
-- `Vector{Float32}`: A vector of length `num_atoms - 1` containing the distances from the central atom 
-  (specified in the `DistanceLayer`) to every other atom in the structure. The distance to the central atom itself 
-  is excluded.
+- `Array{Float32, 2}`: A matrix of shape `(batch_size, num_atoms - 1)` containing distances from the central atom to all other atoms for each structure in the batch. The distance to the central atom itself is excluded.
 
 ### Notes
-- If a lattice matrix is specified in the layer, periodic boundary conditions (PBC) are applied using the 
-  minimum image convention.
-- This function assumes atomic positions are in Cartesian coordinates.
-- The order of output distances corresponds to the atom indices in the input, skipping the central atom.
+- The output excludes the distance from the central atom to itself.
+- If `lattice` is specified, distances are computed using periodic boundary conditions.
+- The order of output distances matches the input atom order, with the central atom removed.
 
 ### Example
-
 ```julia
-x = rand(Float32, 4, 3)  # 4 atoms in 3D
-layer = DistanceLayer(2)
-distances = layer(x)     # Returns a Vector{Float32} of length 3
-
+x = rand(Float32, 8, 5, 3)  # 8 structures, each with 5 atoms in 3D
+distances = distance_layer(x, 2)  # Compute distances from atom 2
 """
 
-function (layer::DistanceLayer)(x::Matrix{Float32})::Vector{Float32}
-  N = size(x, 1)
-  xi = x[layer.central_atom_idx, :]
 
-  return [
-      begin
-          dx = xi .- xj
+function distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing)
+    batch_size, N, _ = size(x)
+    use_pbc = lattice !== nothing
+    inv_lat = use_pbc ? inv(lattice) : nothing
 
-          # Apply periodic boundary conditions if needed
-          if layer.lattice !== nothing
-              inv_lat = inv(layer.lattice)
-              dx_frac = inv_lat * dx
-              dx_frac = dx_frac .- round.(dx_frac)
-              dx = layer.lattice * dx_frac
-          end
+    xi = reshape(view(x, :, central_atom_idx, :), batch_size, 1, :)
+    dx = x .- xi
+"""
+    if use_pbc
+        dx = map(1:batch_size) do b
+            map(1:N) do a
+                dx_ba = dx[b, a, :]
+                dx_frac = inv_lat * dx_ba
+                dx_frac_wrapped = dx_frac .- round.(dx_frac)
+                (lattice * dx_frac_wrapped)'  # row vector
+            end |> x -> reduce(vcat, x)'  # (N, 3)
+        end |> x -> reduce(hcat, x) |> x -> reshape(x, batch_size, N, 3)
+    end"""
 
-          norm(dx)
-      end
-      for (j, xj) in enumerate(eachrow(x)) if j != layer.central_atom_idx
-  ]
+    distances_all = sqrt.(sum(dx.^2, dims=3))[:, :, 1]
+
+    if central_atom_idx == 1
+        distances = distances_all[:, 2:end]
+    elseif central_atom_idx == N
+        distances = distances_all[:, 1:end-1]
+    else
+        distances = hcat(distances_all[:, 1:central_atom_idx-1], distances_all[:, central_atom_idx+1:end])
+    end
+
+    return distances
 end
 
 
 
-Flux.@layer DistanceLayer
-
-"""
-    Base.show(io::IO, layer::DistanceLayer)
-
-Custom implementation of the `show` function for the `DistanceLayer` type.
-
-This function defines how a `DistanceLayer` object is displayed when printed.
-
-### Arguments:
-- `io::IO`: The output stream (e.g., `stdout`, file, etc.) where the information should be printed.
-- `layer::DistanceLayer`: The `DistanceLayer` instance to be displayed.
-
-### Example:
-```julia
-layer = DistanceLayer(1, lattice_matrix)
-show(stdout, layer)
-
-"""
-
-function Base.show(io::IO, layer::DistanceLayer)
-  print(io, "DistanceLayer")
-end
 
 
 
@@ -308,15 +257,22 @@ function assemble_model(
   N = length(species_order)
 
   branches = ntuple(i -> Chain(
-      DistanceLayer(i, lattice),
+      x -> distance_layer(x, i, lattice),
       species_models[species_order[i]]  
   ), N)
 
   parallel = Parallel(vcat, branches...)
-  sum_layer = x_tuple -> reduce(+, x_tuple)
+  
+  # This sums each structure's atomic energies to total energy, per batch
+  sum_layer = x_tuple -> sum(x_tuple; dims=1)[:]  # restituisce un vettore 1D
+
+  
+
+
 
   return Chain(parallel, sum_layer)
 end
+
 
 
 
@@ -446,11 +402,6 @@ println("Loss: ", loss)
 """
 
 
-<<<<<<< Updated upstream
-function loss_function(model, data, energy::Vector{Float32})
-  losses = [abs2(model(data[i, :, :]) - energy[i]) for i in 1:size(data, 1)]
-  return sum(losses) / length(losses)
-=======
 function loss_function(model, data, target::Vector{Dict{Symbol, Any}}; lambda = 0.1)
     # data shape: (batch_size, N_atoms, features)
     # model output shape: (batch_size,)
@@ -463,18 +414,14 @@ function loss_function(model, data, target::Vector{Dict{Symbol, Any}}; lambda = 
     # forward pass on entire batch
     energy_losses = abs2.(preds .- energy)  # elementwise squared error
     #force_losses = abs2.(forces_preds .- forces)
-    
+    force_losses = 0
     losses = energy_losses 
     
     return mean(losses)            # mean loss over batch
->>>>>>> Stashed changes
 end
 
+function calculate_forces(model,data)
 
-<<<<<<< Updated upstream
-
-
-=======
   n_batches=size(data)[1]
   #forces=[Zygote.gradient(model,data[i,:,:]) for i in n_batches]
   #println(forces)
@@ -482,7 +429,6 @@ end
   return(forces)
   
 end
->>>>>>> Stashed changes
 
 
 
@@ -552,9 +498,9 @@ Trains a neural network model to predict total energies of atomic structures.
 function train_model!(
   model,
   x_train::Any, 
-  y_train1::Vector{Dict{Symbol, Any}}, 
+  y_train::Vector{Dict{Symbol, Any}}, 
   x_val::Any, 
-  y_val1::Vector{Dict{Symbol, Any}}, 
+  y_val::Vector{Dict{Symbol, Any}}, 
   loss_function::Function;
   initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
   epochs=3000, batch_size=32, verbose=true
@@ -573,8 +519,7 @@ function train_model!(
   loss_val = zeros(Float32, epochs)
   no_improve_count = 0
 
-  y_train=[t[:energy] for t in y_train1]
-  y_val=[t[:energy] for t in y_val1]
+ 
 
   @showprogress for epoch in 1:epochs
       for i in 1:batch_size:size(x_train, 1)

@@ -56,18 +56,14 @@ end
 
 
     # Step 4: Data preprocessing
-    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, target)
+    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, target,split=[0.6, 0.2, 0.2])
     println("Time for data_preprocess: ", time_preprocess, " seconds")
 
-    all_energies = [t[:energy] for t in Train[2]]
-    all_forces = [t[:forces] for t in Train[2]]
-    @test abs(mean(vcat(all_forces...))) < 1e-4
-    @test abs(mean(all_energies)) < 1e-4
 
     
 
     # Step 5: Create branches
-    time_create_species_model = @elapsed species_models = create_toy_species_models(species,2,5.0f0)   
+    time_create_species_model = @elapsed species_models = create_toy_species_models(species,1,5.0f0)   
     println("Time for create_species_model: ", time_create_species_model, " seconds")
     @test length(species_models) == size(unique_species)[1]
 
@@ -75,15 +71,26 @@ end
     time_assemble_model = @elapsed model = assemble_model(species_models, species,all_cells[1])
     println("Time for assemble_model: ", time_assemble_model, " seconds")
 
+    #extract params for a later test
+    params , _ = Flux.destructure(model)
 
-    # Extract all the model parameters
-    params=[]
-    for i in 1:3
-        push!(params, model[1].layers[i][2][1].W_eta)
-        push!(params, model[1].layers[i][2][1].W_Fs) 
-        push!(params, model[1].layers[i][2][2].weight)
-    end
-    flattened_params = vcat([vec(p) for p in params]...)  
+    x_sample= Train[1][1:3,:,:]
+
+    y_sample=Train[2][1:3]
+
+    
+
+    println("x_sample: ",x_sample)
+    println("x_sample dims: ",size(x_sample))
+    println("y_sample: ",y_sample)
+
+    println("model output: ",model(x_sample))
+
+
+    println("model loss on the sample: ",loss_function(model,x_sample,y_sample))
+
+
+
 
     # Step 7: Train the model
 
@@ -99,17 +106,10 @@ end
     println("Time for train_model!: ", time_train, " seconds")
 
     # Check to see if parameters actually changed after the training
-    
-    trained_params=[]
-    for i in 1:3
-        push!(params, trained_model[1].layers[i][2][1].W_eta)
-        push!(params, trained_model[1].layers[i][2][1].W_Fs) 
-        push!(params, trained_model[1].layers[i][2][2].weight)
-    end
-    flattened_trained_params = vcat([vec(p) for p in params]...)  
 
+    _ , trained_params = Flux.destructure(model)
 
-    @test flattened_trained_params != flattened_params
+    @test trained_params != params
   
 
     

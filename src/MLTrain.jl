@@ -446,14 +446,43 @@ println("Loss: ", loss)
 """
 
 
+<<<<<<< Updated upstream
 function loss_function(model, data, energy::Vector{Float32})
   losses = [abs2(model(data[i, :, :]) - energy[i]) for i in 1:size(data, 1)]
   return sum(losses) / length(losses)
+=======
+function loss_function(model, data, target::Vector{Dict{Symbol, Any}}; lambda = 0.1)
+    # data shape: (batch_size, N_atoms, features)
+    # model output shape: (batch_size,)
+    energy = [d[:energy] for d in target]
+    forces = [d[:forces] for d in target]
+ 
+    
+    preds = model(data)  
+    forces_preds = calculate_forces(model,data)
+    # forward pass on entire batch
+    energy_losses = abs2.(preds .- energy)  # elementwise squared error
+    #force_losses = abs2.(forces_preds .- forces)
+    
+    losses = energy_losses 
+    
+    return mean(losses)            # mean loss over batch
+>>>>>>> Stashed changes
 end
 
 
+<<<<<<< Updated upstream
 
 
+=======
+  n_batches=size(data)[1]
+  #forces=[Zygote.gradient(model,data[i,:,:]) for i in n_batches]
+  #println(forces)
+  forces=0
+  return(forces)
+  
+end
+>>>>>>> Stashed changes
 
 
 

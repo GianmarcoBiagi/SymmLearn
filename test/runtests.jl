@@ -94,7 +94,7 @@ end
         Val[1],
         Val[2],
         loss_function;
-         initial_lr=0.1,epochs=2, batch_size=4, verbose=false
+         initial_lr=0.1,epochs=1, batch_size=4, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")
 

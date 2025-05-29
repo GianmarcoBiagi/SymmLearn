@@ -99,43 +99,37 @@ output = layer(x)                    # Forward pass producing output of shape (3
 println(output)
 """
 
-function (layer::MyLayer)(x::AbstractMatrix{Float32})  # x shape: (batch_size, N_neighbors)
+function (layer::MyLayer)(x::Union{AbstractMatrix{Float32}, AbstractVector{Float32}})
+    single_input = false
+    if ndims(x) == 1
+        x = reshape(x, 1, :)
+        single_input = true
+    end
+
     batch_size, N_neighbors = size(x)
-    hidden_dim, input_dim = size(layer.W_eta)  # input_dim should be 1 here
+    hidden_dim, input_dim = size(layer.W_eta)  # input_dim is assumed to be 1
 
-    # Reshape x to (batch_size, 1, N_neighbors) to broadcast with weights (hidden_dim, 1)
-    # Actually we want to broadcast over hidden_dim, batch_size, N_neighbors
+    @assert input_dim == 1 "This layer currently supports only 1D inputs per neighbor"
 
-    # Expand weights W_eta and W_Fs from (hidden_dim, input_dim=1) to (hidden_dim, batch_size, N_neighbors)
-    # Expand x from (batch_size, N_neighbors) to (1, batch_size, N_neighbors)
+    # Reshape for broadcasting
+    x_expanded = reshape(x, 1, batch_size, N_neighbors)            # (1, batch_size, N_neighbors)
+    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)          # (hidden_dim, 1, 1)
+    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)        # (hidden_dim, 1, 1)
 
-    # Use broadcasting:
-  
+    fc_x = fc.(x_expanded, layer.cutoff)                           # (1, batch_size, N_neighbors)
 
-    x_expanded = reshape(x, 1, batch_size, N_neighbors)          # (1, batch_size, N_neighbors)
-    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)       # (hidden_dim, 1, 1)
-    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)     # (hidden_dim, 1, 1)
+    diff_sq = (x_expanded .- W_Fs_expanded).^2                    # (hidden_dim, batch_size, N_neighbors)
+    exp_term = exp.(-diff_sq .* W_eta_expanded)                   # (hidden_dim, batch_size, N_neighbors)
 
-    # Compute fc(x), assuming fc is scalar function applied elementwise
-    fc_x = fc.(x_expanded, layer.cutoff)                         # (1, batch_size, N_neighbors)
+    contribution = layer.charge .* fc_x .* exp_term               # (hidden_dim, batch_size, N_neighbors)
 
-    # Broadcast calculation
-    # diff squared: (x - W_Fs)^2
-    diff_sq = (x_expanded .- W_Fs_expanded) .^ 2                # (hidden_dim, batch_size, N_neighbors)
+    sum_over_neighbors = sum(contribution, dims=3)                # (hidden_dim, batch_size, 1)
+    output = dropdims(sum_over_neighbors, dims=3)  # (batch_size, hidden_dim)
 
-    # exponent term
-    exp_term = exp.(-diff_sq .* W_eta_expanded)                  # (hidden_dim, batch_size, N_neighbors)
-
-    # total contribution per hidden_dim, batch, neighbor
-    contribution = layer.charge .* fc_x .* exp_term              # broadcasting fc_x (1,batch,neighbors) over hidden_dim
-
-    # sum over neighbors axis (3rd dim)
-    sum_over_neighbors = sum(contribution, dims=3)               # shape (hidden_dim, batch_size, 1)
-
-    # permute dims to (batch_size, hidden_dim)
-    output = permutedims(dropdims(sum_over_neighbors, dims=3), (2, 1))  # (batch_size, hidden_dim)
-    return output'
+    return single_input ? vec(output) : output  # return vector if input was a vector
 end
+
+
 
 """
     distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing) -> Array{Float32, 2}
@@ -166,37 +160,47 @@ distances = distance_layer(x, 2)  # Compute distances from atom 2
 """
 
 
-function distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing)
+function distance_layer(
+    x::Union{Array{Float32,3}, Array{Float32,2}}, 
+    central_atom_idx::Int, 
+    lattice::Union{Nothing, Matrix{Float32}} = nothing
+)
+    # Normalizza x per avere shape (batch_size, N, 3)
+    if ndims(x) == 2
+        x = reshape(x, 1, size(x, 1), size(x, 2))
+    elseif ndims(x) != 3
+        error("Input x must be of shape (N, 3) or (batch_size, N, 3)")
+    end
+
     batch_size, N, _ = size(x)
     use_pbc = lattice !== nothing
     inv_lat = use_pbc ? inv(lattice) : nothing
 
-    xi = reshape(view(x, :, central_atom_idx, :), batch_size, 1, :)
-    dx = x .- xi
-"""
-    if use_pbc
-        dx = map(1:batch_size) do b
-            map(1:N) do a
-                dx_ba = dx[b, a, :]
-                dx_frac = inv_lat * dx_ba
-                dx_frac_wrapped = dx_frac .- round.(dx_frac)
-                (lattice * dx_frac_wrapped)'  # row vector
-            end |> x -> reduce(vcat, x)'  # (N, 3)
-        end |> x -> reduce(hcat, x) |> x -> reshape(x, batch_size, N, 3)
-    end"""
+    # Coordinate relative rispetto all'atomo centrale
+    xi = x[:, central_atom_idx, :]  # shape: (batch_size, 3)
+    xi = reshape(xi, batch_size, 1, 3)  # shape: (batch_size, 1, 3)
+    dx = x .- xi  # broadcasting: (batch_size, N, 3)
 
-    distances_all = sqrt.(sum(dx.^2, dims=3))[:, :, 1]
+    # TODO: PBC (periodic boundary conditions), attualmente ignorate
 
+    # Calcola distanze euclidee evitando NaN
+    dx2 = sum(dx.^2, dims=3)  # shape: (batch_size, N, 1)
+    eps = Float32(1e-7)  # piccolo valore per evitare sqrt(0)
+    distances_all = sqrt.(dx2 .+ eps)[:, :, 1]  # (batch_size, N)
+
+    # Rimuovi la colonna centrale (non distanza da sé stesso)
     if central_atom_idx == 1
         distances = distances_all[:, 2:end]
     elseif central_atom_idx == N
         distances = distances_all[:, 1:end-1]
     else
-        distances = hcat(distances_all[:, 1:central_atom_idx-1], distances_all[:, central_atom_idx+1:end])
+        distances = cat(distances_all[:, 1:central_atom_idx-1], distances_all[:, central_atom_idx+1:end]; dims=2)
     end
 
-    return distances
+    return distances  # shape: (batch_size, N-1)
 end
+
+
 
 
 
@@ -402,33 +406,54 @@ println("Loss: ", loss)
 """
 
 
-function loss_function(model, data, target::Vector{Dict{Symbol, Any}}; lambda = 0.1)
+function loss_function(model, data, target::Union{Vector{Dict{Symbol, Any}}, Dict{Symbol, Any}}; lambda = 0.1)
     # data shape: (batch_size, N_atoms, features)
     # model output shape: (batch_size,)
-    energy = [d[:energy] for d in target]
-    forces = [d[:forces] for d in target]
- 
+
+
+    if typeof(target) == Dict{Symbol, Any}
+
+      energy = target[:energy]
+
+      forces = target[:forces]
+
+    else
+
+      energy = [d[:energy] for d in target]
+      forces = [d[:forces] for d in target]
+
+    end
+    
     
     preds = model(data)  
+ 
     forces_preds = calculate_forces(model,data)
+
     # forward pass on entire batch
     energy_losses = abs2.(preds .- energy)  # elementwise squared error
-    #force_losses = abs2.(forces_preds .- forces)
-    force_losses = 0
-    losses = energy_losses 
+
+    force_losses = [
+        mean((forces_preds[i] .- forces[i]).^2) for i in 1:length(forces)
+    ] #this is already normalized by 3*num_atoms
+    losses = energy_losses .+ lambda .* force_losses
     
+
+    println("ho calcolato le loss: ", losses)
     return mean(losses)            # mean loss over batch
 end
 
-function calculate_forces(model,data)
-
-  n_batches=size(data)[1]
-  #forces=[Zygote.gradient(model,data[i,:,:]) for i in n_batches]
-  #println(forces)
-  forces=0
-  return(forces)
-  
+function calculate_forces(model, data)
+    if ndims(data) == 3
+        n_batches = size(data, 1)
+        forces = [Zygote.gradient(x -> model(x)[1], data[i, :, :])[1] for i in 1:n_batches]
+    elseif ndims(data) == 2
+        forces = Zygote.gradient(x -> model(x)[1], data)[1]
+    else
+        error("Data must be a 2D or 3D array (single sample or batch of samples)")
+    end
+    return forces
 end
+
 
 
 

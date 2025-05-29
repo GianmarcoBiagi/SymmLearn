@@ -78,17 +78,10 @@ end
 
     y_sample=Train[2][1:3]
 
-    
-
-    println("x_sample: ",x_sample)
-    println("x_sample dims: ",size(x_sample))
-    println("y_sample: ",y_sample)
 
     println("model output: ",model(x_sample))
 
-
     println("model loss on the sample: ",loss_function(model,x_sample,y_sample))
-
 
 
 

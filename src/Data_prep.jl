@@ -241,9 +241,13 @@ function data_preprocess(input_data, target; split=[0.6, 0.2, 0.2]::Vector{Float
     f_test  .= (f_test  .- forces_mean) ./ forces_std
 
     ##### --- Repack normalized targets --- #####
-    y_train = [Dict(:energy => e_train[i], :forces => f_train[i, :]) for i in 1:length(e_train)]
-    y_val   = [Dict(:energy => e_val[i],   :forces => f_val[i, :])   for i in 1:length(e_val)]
-    y_test  = [Dict(:energy => e_test[i],  :forces => f_test[i, :])  for i in 1:length(e_test)]
+    n_atoms = size(input_data)[2]
+  
+
+    y_train = [Dict(:energy => e_train[i], :forces => reshape(f_train[i, :], (n_atoms, 3))) for i in 1:length(e_train)]
+    y_val   = [Dict(:energy => e_val[i],   :forces => reshape(f_val[i, :],   (n_atoms, 3))) for i in 1:length(e_val)]
+    y_test  = [Dict(:energy => e_test[i],  :forces => reshape(f_test[i, :],  (n_atoms, 3))) for i in 1:length(e_test)]
+
 
     ##### --- Return --- #####
     return (x_train, y_train), (x_val, y_val), (x_test, y_test), energy_mean, energy_std, forces_mean, forces_std

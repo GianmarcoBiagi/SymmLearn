@@ -3,6 +3,7 @@ using Random
 using ProgressMeter
 using Statistics
 using Zygote
+using Enzyme
 
 """
     struct MyLayer
@@ -99,35 +100,29 @@ output = layer(x)                    # Forward pass producing output of shape (3
 println(output)
 """
 
-function (layer::MyLayer)(x::Union{AbstractMatrix{Float32}, AbstractVector{Float32}})
-    single_input = false
-    if ndims(x) == 1
-        x = reshape(x, 1, :)
-        single_input = true
-    end
-
-    batch_size, N_neighbors = size(x)
-    hidden_dim, input_dim = size(layer.W_eta)  # input_dim is assumed to be 1
-
-    @assert input_dim == 1 "This layer currently supports only 1D inputs per neighbor"
-
-    # Reshape for broadcasting
-    x_expanded = reshape(x, 1, batch_size, N_neighbors)            # (1, batch_size, N_neighbors)
-    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)          # (hidden_dim, 1, 1)
-    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)        # (hidden_dim, 1, 1)
-
-    fc_x = fc.(x_expanded, layer.cutoff)                           # (1, batch_size, N_neighbors)
-
-    diff_sq = (x_expanded .- W_Fs_expanded).^2                    # (hidden_dim, batch_size, N_neighbors)
-    exp_term = exp.(-diff_sq .* W_eta_expanded)                   # (hidden_dim, batch_size, N_neighbors)
-
-    contribution = layer.charge .* fc_x .* exp_term               # (hidden_dim, batch_size, N_neighbors)
-
-    sum_over_neighbors = sum(contribution, dims=3)                # (hidden_dim, batch_size, 1)
-    output = dropdims(sum_over_neighbors, dims=3)  # (batch_size, hidden_dim)
-
-    return single_input ? vec(output) : output  # return vector if input was a vector
+function (layer::MyLayer)(x::AbstractVector{Float32})
+    output = layer(reshape(x, 1, :))  
+    return vec(output)               
 end
+
+function (layer::MyLayer)(x::AbstractMatrix{Float32})
+    batch_size, N_neighbors = size(x)
+    hidden_dim, input_dim = size(layer.W_eta)
+
+    @assert input_dim == 1
+
+    x_expanded = reshape(x, 1, batch_size, N_neighbors)
+    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)
+    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)
+
+    fc_x = fc.(x_expanded, layer.cutoff)
+    diff_sq = (x_expanded .- W_Fs_expanded).^2
+    exp_term = exp.(-diff_sq .* W_eta_expanded)
+    contribution = layer.charge .* fc_x .* exp_term
+    sum_over_neighbors = sum(contribution, dims=3)
+    return dropdims(sum_over_neighbors, dims=3)  # (batch_size, hidden_dim)
+end
+
 
 
 
@@ -203,167 +198,103 @@ end
 
 
 
-
-
-
-
-
 """
-    assemble_model(
-      species_models::Dict{String,Chain},
+    build_total_model_inline(
       species_order::Vector{String},
+      G1_number::Int,
+      R_cutoff::Float32;
       lattice::Union{Nothing, Matrix{Float32}} = nothing
     ) -> Chain
 
-Constructs a composite Flux model that, for each atom in the structure:
-1. Computes interatomic distances from atomic coordinates using `DistanceLayer`.
-2. Applies the appropriate species-specific subnetwork to predict the per-atom energy.
-3. Sums all atomic energies to obtain the total energy per structure.
+Constructs a complete Flux model that predicts the total energy of a molecular structure by
+processing each atom individually and summing their predicted atomic energies.
+
+For each atom in the structure, the model:
+1. Computes interatomic distances from atomic coordinates using a custom `distance_layer`.
+2. Applies a species-specific subnetwork that includes a custom `MyLayer` followed by
+   dense layers to predict the atomic energy.
+3. Aggregates all atomic energies by summation to obtain the total energy for the structure.
 
 ### Arguments:
-- `species_models::Dict{String,Chain}`  
-  A dictionary mapping each atomic species (e.g., `"H"`, `"C"`, `"O"`) to its
-  corresponding `Flux.Chain` subnetwork.
-
 - `species_order::Vector{String}`  
-  A length-N vector specifying, for atom positions `1…N`, which species occupies each
-  slot. Must only contain species keys from `species_models`.
+  Vector of length N specifying the species label for each atom (e.g., `"H"`, `"C"`, `"O"`).
 
-- `lattice::Union{Nothing, Matrix{Float32}} = nothing`  
-  The lattice matrix used for periodic boundary conditions (PBC). If `nothing`, no PBC
-  will be applied. This lattice is shared across all `DistanceLayer`s for simplicity.
+- `G1_number::Int`  
+  Number of features/output units in the custom `MyLayer` and input dimension of the first Dense layer.
+
+- `R_cutoff::Float32`  
+  Cutoff radius parameter passed to `MyLayer` to limit the interaction range.
+
+- `lattice::Union{Nothing, Matrix{Float32}} = nothing` (optional)  
+  Optional lattice matrix for applying periodic boundary conditions (PBC) in distance calculations.  
+  If `nothing`, no PBC are applied.
 
 ### Returns:
 - `Chain`  
-  A Flux model where each branch processes one atom:
-  - `DistanceLayer(i, lattice)` computes distances from atom `i` to all others.
-  - The corresponding species-specific model processes the distances.
-  The outputs (scalars) from all branches are summed to return the total energy.
-
-### Example:
-```julia
-species_list = ["H", "O"]
-species_models = create_species_models(species_list, G1_number, R_cutoff)
-species_order = ["H", "H", "O"]
-model = assemble_model(species_models, species_order)
-
-# Input `x` should be a tensor of shape (num_atoms, 3, batch_size)
-# Then: model(ntuple(i -> x[i, :, :], num_atoms))
-
-
-"""
-
-function assemble_model(
-  species_models::Dict{String,Chain},
-  species_order::Vector{String},
-  lattice::Union{Nothing, Matrix{Float32}} = nothing
-)
-  N = length(species_order)
-
-  branches = ntuple(i -> Chain(
-      x -> distance_layer(x, i, lattice),
-      species_models[species_order[i]]  
-  ), N)
-
-  parallel = Parallel(vcat, branches...)
+  A Flux model where each atomic branch consists of:
+  - A distance calculation layer computing distances of that atom to all others (using `distance_layer`).
+  - A species-specific subnetwork (custom `MyLayer` + Dense layers) that outputs the atomic energy scalar.
   
-  # This sums each structure's atomic energies to total energy, per batch
-  sum_layer = x_tuple -> sum(x_tuple; dims=1)[:]  # restituisce un vettore 1D
+  All atomic energies are concatenated and then summed to produce the total energy prediction.
 
-  
+### Usage Example:
 
-
-
-  return Chain(parallel, sum_layer)
-end
-
-
-
-
-
-
-"""
-    create_species_models(species::Vector{String}, G1_number::Int, R_cutoff::Float32) -> Dict{String, Chain}
-
-Given a list of unique atomic species, construct and return a dictionary mapping
-each species name to its corresponding Flux.Chain model.  Each model branch
-is built by calling `build_branch(name, G1_number, R_cutoff)`.
-
-# Arguments
-- `species::Vector{String}`: List of species , e.g. `["H","H","C","O","O",...]`.
-- `G1_number::Int`: Number of symmetry‑function features fed into the branch.
-- `R_cutoff::Float32`: Cutoff radius used by the custom `MyLayer`.
-
-# Returns
-- `Dict{String, Chain}`: A dictionary where
-    `dict["H"]` is the Chain for hydrogen,
-    `dict["C"]` is the Chain for carbon, etc.
-"""
-function create_species_models(
-    species::Vector{String},
-    G1_number::Int,
-    R_cutoff::Float32
-)   
-    unique_species = Set(species)
-    unique_species = collect(unique_species)
-    models = Dict{String, Chain}()
-    for sp in unique_species
-        # build_branch returns a Flux.Chain for that species
-        models[sp] = build_branch(sp, G1_number, R_cutoff)
-    end
-    return models
-end
-
-
-
-"""
-    create_species_models(
-        species::Vector{String},
-        G1_number::Int,
-        R_cutoff::Float32
-    ) -> Dict{String, Chain}
-
-Creates and returns a dictionary mapping each unique atomic species to its corresponding
-Flux.Chain model. Each model is built using the `build_branch` function, which defines
-a subnetwork architecture specific to that species.
-
-### Arguments:
-- `species::Vector{String}`:  
-  List of atomic species appearing in the dataset, e.g. `["H", "H", "C", "O", "O", …]`.
-
-- `G1_number::Int`:  
-  Number of symmetry function (G1) features passed to each branch.
-
-- `R_cutoff::Float32`:  
-  Cutoff radius passed to the custom `MyLayer`, used to define interaction range.
-
-### Returns:
-- `Dict{String, Chain}`:  
-  A dictionary mapping each species name to its corresponding Flux.Chain model.
-  For example:  
-  - `dict["H"]` is the model for hydrogen  
-  - `dict["C"]` is the model for carbon  
-  - etc.
-
-### Example:
 ```julia
-species_list = ["H", "C", "O", "H", "O"]
+species_order = ["H", "H", "O", "C"]
 G1_number = 5
 R_cutoff = 6.0f0
-species_models = create_species_models(species_list, G1_number, R_cutoff)
+lattice = nothing  # or a 3x3 Float32 matrix for PBC
 
+model = build_total_model(species_order, G1_number, R_cutoff; lattice=lattice)
+
+# Input x should be a tuple of atomic coordinate arrays, one per atom:
+# For example, x = (x1, x2, ..., xN), where each xi is (num_neighbors, 3) or similar shape.
+# Then: y_pred = model(x)
 """
 
-function build_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
-    ion_charge = 0.1f0 * element_to_charge[Atom_name]
-    return Chain(
-        MyLayer(1, G1_number, R_cutoff, ion_charge),
-        Dense(G1_number, 15, tanh),
-        Dense(15, 10, tanh),
-        Dense(10, 5, tanh),
-        Dense(5, 1)
-    )
+
+struct TotalModel
+    branches::Vector{Chain}
 end
+
+Flux.@layer TotalModel
+
+function (m::TotalModel)(input)
+    outputs = map(branch -> branch(input), m.branches)
+    summed = sum(outputs)
+    return reshape(summed, :)
+end
+
+
+
+function build_model(
+    species_order::Vector{String},
+    G1_number::Int,
+    R_cutoff::Float32;
+    lattice::Union{Nothing, Matrix{Float32}} = nothing
+)
+
+    N = length(species_order)
+
+    branches = [begin
+        atom = species_order[i]
+        charge = 0.1f0 * element_to_charge[atom]
+
+        Chain(
+            x -> distance_layer(x, i, lattice),
+            MyLayer(1, G1_number, R_cutoff, charge),
+            Dense(G1_number, 15, tanh),
+            Dense(15, 10, tanh),
+            Dense(10, 5, tanh),
+            Dense(5, 1)
+        )
+    end for i in 1:N]
+
+    return TotalModel(branches)
+end
+
+
+
 
 """
     loss_function(model, data, energies)
@@ -432,6 +363,7 @@ function loss_function(model, data, target::Union{Vector{Dict{Symbol, Any}}, Dic
     # forward pass on entire batch
     energy_losses = abs2.(preds .- energy)  # elementwise squared error
 
+
     force_losses = [
         mean((forces_preds[i] .- forces[i]).^2) for i in 1:length(forces)
     ] #this is already normalized by 3*num_atoms
@@ -445,14 +377,53 @@ end
 function calculate_forces(model, data)
     if ndims(data) == 3
         n_batches = size(data, 1)
-        forces = [Zygote.gradient(x -> model(x)[1], data[i, :, :])[1] for i in 1:n_batches]
+        forces = [Zygote.gradient(x->model(x)[1], data[i, :, :])[1] for i in 1:n_batches]
     elseif ndims(data) == 2
-        forces = Zygote.gradient(x -> model(x)[1], data)[1]
+        forces = Zygote.gradient(x->model(x)[1], data)[1]
     else
         error("Data must be a 2D or 3D array (single sample or batch of samples)")
     end
     return forces
 end
+
+"""
+    loss_function_no_forces(model, data, energies)
+
+check documentation for loss_function, this is excatly the same but without using the forces
+
+
+"""
+
+
+function loss_function_no_forces(model, data, target::Union{Vector{Dict{Symbol, Any}}, Dict{Symbol, Any}})
+    # data shape: (batch_size, N_atoms, features)
+    # model output shape: (batch_size,)
+
+
+    if typeof(target) == Dict{Symbol, Any}
+
+      energy = target[:energy]
+
+
+    else
+
+      energy = [d[:energy] for d in target]
+
+    end
+    
+    
+    preds = model(data)  
+ 
+
+    # forward pass on entire batch
+    loss = abs2.(preds .- energy)  # elementwise squared error
+
+
+    return mean(loss)          
+end
+
+
+
 
 
 
@@ -551,8 +522,11 @@ function train_model!(
           end_index = min(i + batch_size - 1, size(x_train, 1))
           x_batch = x_train[i:end_index,:,:]
           y_batch = y_train[i:end_index]
+      
           Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
+ 
       end
+
 
       # Compute losses for training and validation
       loss_train[epoch] = loss_function(model, x_train, y_train)

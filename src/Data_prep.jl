@@ -333,6 +333,7 @@ Processes an XYZ file to generate input data for a neural network.
 - `y_mean`: Mean energy value for normalization.
 - `y_std`: Standard deviation of energy values for normalization.
 - `species`: List of atomic species present in the dataset, can be used as an input for the `create_model` function.
+- 'all_cells': List of all the lattice cells of the dataset
 
 # Description
 This function extracts atomic structure and energy information from the input XYZ file.
@@ -356,10 +357,10 @@ println(Val)
 function xyz_to_nn_input(file_path::String)
 
     # Extract atomic and structural information from the input XYZ file
-    N_atoms, species, all_cells, dataset, all_energies = extract_data(file_path)
+    N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
 
     # Create the neural network input dataset
-    nn_input_dataset = create_nn_input(dataset, all_cells, N_atoms)
+    nn_input_dataset = create_nn_input(dataset, N_atoms)
 
     #Create the neural network target 
 
@@ -370,5 +371,5 @@ function xyz_to_nn_input(file_path::String)
     Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, target)
     
     # Return the processed datasets and normalization parameters
-    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std)
+    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, species, all_cells)
 end

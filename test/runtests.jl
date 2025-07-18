@@ -1,5 +1,6 @@
 using Test
 using SymmLearn
+using Enzyme
 
 include("../src/MLTrain.jl")
 include("../src/Data_prep.jl")
@@ -9,27 +10,51 @@ include("../src/Utils.jl")
 #for further info check the documentation for create_model
 
 
-function build_toy_branch(Atom_name::String,G1_number::Int,R_cutoff::Float32)
-    ion_charge = 0.1f0 * element_to_charge[Atom_name]
-    return Chain(
-        MyLayer(1, G1_number, R_cutoff, ion_charge),
-        Dense(G1_number, 1)
-    )
+struct ToyModel
+    branches::Vector{Chain}
 end
 
 
-function create_toy_species_models(
-    unique_species::Vector{String},
-    G1_number::Int,
-    R_cutoff::Float32
-)
-    models = Dict{String, Chain}()
-    for sp in unique_species
-        # build_branch returns a Flux.Chain for that species
-        models[sp] = build_toy_branch(sp, G1_number, R_cutoff)
+
+
+(m::ToyModel)(input) = begin
+    total = m.branches[1](input)
+    for i in 2:length(m.branches)
+        total = total + m.branches[i](input)
     end
-    return models
+    return reshape(total, :)
 end
+
+
+
+
+
+function build_toy_model(
+    species_order::Vector{String},
+    G1_number::Int,
+    R_cutoff::Float32;
+    lattice::Union{Nothing, Matrix{Float32}} = nothing
+)
+    N = length(species_order)
+
+    branches = [begin
+        atom = species_order[i]
+        charge = 0.1f0 * element_to_charge[atom]
+
+        Chain(
+            x -> distance_layer(x, i, lattice),
+            MyLayer(1, G1_number, R_cutoff, charge),
+            Dense(G1_number, 1)
+        )
+    end for i in 1:N]
+
+    return ToyModel(branches)
+end
+
+
+
+
+
 
 
 @testset "Model Training Test" begin
@@ -62,14 +87,12 @@ end
 
     
 
-    # Step 5: Create branches
-    time_create_species_model = @elapsed species_models = create_toy_species_models(species,1,5.0f0)   
-    println("Time for create_species_model: ", time_create_species_model, " seconds")
-    @test length(species_models) == size(unique_species)[1]
+    # Step 5 & 6: Build the full model in one step
+    time_build_model = @elapsed model = build_toy_model(species, 1, 5.0f0; lattice=all_cells[1])
+    println("Time for build_total_model_inline: ", time_build_model, " seconds")
 
-    # Step 6: Create models
-    time_assemble_model = @elapsed model = assemble_model(species_models, species,all_cells[1])
-    println("Time for assemble_model: ", time_assemble_model, " seconds")
+   
+
 
     #extract params for a later test
     params , _ = Flux.destructure(model)
@@ -79,11 +102,20 @@ end
     y_sample=Train[2][1:3]
 
 
-    println("model output: ",model(x_sample))
+    println("model output with a batch as an input: ",model(x_sample))
 
-    println("model loss on the sample: ",loss_function(model,x_sample,y_sample))
+    println("model loss on the sample with a batch as an input: ",loss_function(model,x_sample,y_sample))
+
+    x_sample= Train[1][1,:,:]
+
+    y_sample=Train[2][1]
 
 
+    println("model output with a single configuration as an input: ",model(x_sample))
+
+    println("model loss on the sample with a single configuration as an input: ",loss_function(model,x_sample,y_sample))
+
+    exit(0)
 
     # Step 7: Train the model
 
@@ -94,7 +126,7 @@ end
         Val[1],
         Val[2],
         loss_function;
-         initial_lr=0.1,epochs=1, batch_size=4, verbose=false
+         initial_lr=0.1,epochs=1, batch_size=1, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")
 

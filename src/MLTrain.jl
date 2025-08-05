@@ -2,11 +2,12 @@ using Flux
 using Random
 using ProgressMeter
 using Statistics
-using Zygote
 using Enzyme
 
+
+
 """
-    struct MyLayer
+    struct G1Layer
 
 A custom layer structure that contains two sets of weights for neural network connections, as well as additional parameters related to the system.
 
@@ -16,111 +17,112 @@ A custom layer structure that contains two sets of weights for neural network co
 - `W_Fs::AbstractArray`
   - A weight matrix for the connection "Fs" in the neural network layer. This represents the parameters associated with the input feature "Fs".
 - `cutoff::Float32`
-  - A scalar value representing the cutoff radius for interactions within the system.
+  - A scalar value represeing the cutoff radius for interactions within the system.
 - `charge::Float32`
   - A scalar value representing the atomic charge for the layer.
 
 ### Example:
 ```julia
-# Create a MyLayer object with example data
+# Create a G1Layer object with example data
 W_eta_example = rand(5, 5)  # Example weight matrix for "eta" with 5x5 dimensions
 W_Fs_example = rand(5, 5)   # Example weight matrix for "Fs" with 5x5 dimensions
 cutoff_example = 5.0f0      # Example cutoff radius value
 charge_example = 1.0f0      # Example atomic charge value
 
-# Create the MyLayer object
-layer = MyLayer(W_eta_example, W_Fs_example, cutoff_example, charge_example)
+# Create the G1Layer object
+layer = G1Layer(W_eta_example, W_Fs_example, cutoff_example, charge_example)
 
 # Print the values
 println("Layer created: ", layer)
 
 """
-struct MyLayer
+struct G1Layer
     W_eta::AbstractArray  # Weights for the "eta" connection
     W_Fs::AbstractArray   # Weights for the "Fs" connection
     cutoff::Float32       # Cutoff radius
     charge::Float32       # Atomic charge
 end
 
-Flux.@layer MyLayer
+
+Flux.@layer G1Layer trainable = (W_eta,W_Fs,)
 
 """
-    MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32) -> MyLayer
+    G1Layer(N_G1::Int, cutoff::Float32, charge::Float32) -> G1Layer
 
-Creates an instance of the custom `MyLayer` layer with the specified input dimension, hidden dimension,
+Creates an instance of the custom `G1Layer` layer with the specified input dimension, hidden dimension,
 cutoff radius, and atomic charge. The layer is initialized with random weights for the `eta` and `Fs` parameters.
 
 ### Arguments:
-- `input_dim::Int`: The number of input features (dimension of the input vector).
-- `hidden_dim::Int`: The number of neurons in the hidden layer.
+- `N_G1::Int`: The number of G1 symmetry functions used.
 - `cutoff::Float32`: The cutoff radius for the layer's calculations.
 - `charge::Float32`: The atomic charge associated with the layer.
 
 ### Returns:
-- An instance of the `MyLayer` layer with random weights for `eta` and `Fs`.
+- An instance of the `G1Layer` layer with random weights for `eta` and `Fs`.
 """
-function MyLayer(input_dim::Int, hidden_dim::Int, cutoff::Float32, charge::Float32)
+function G1Layer( N_G1::Int, cutoff::Float32, charge::Float32)
     # Initialize weights for eta and Fs with random values
-    W_eta = 0.25f0 .+ 2.25f0 .* rand(Float32, hidden_dim, input_dim)  # Initialize eta weights (Float32)
-    W_Fs = 0.25f0 .+ 2.25f0 .* rand(Float32, hidden_dim, input_dim)   # Initialize Fs weights (Float32)
-
-    # Create and return the MyLayer instance
-    return MyLayer(W_eta, W_Fs, cutoff, charge)
+    W_eta = 0.25f0 .+ 2.25f0 .* rand(Float32, N_G1)  # Initialize eta weights (Float32)
+    W_Fs = 0.25f0 .+ 2.25f0 .* rand(Float32, N_G1)   # Initialize Fs weights (Float32)
+    # Create and return the G1Layer instance
+    return G1Layer(W_eta, W_Fs, cutoff, charge)
 end
 
 
 
 """
-    (layer::MyLayer)(x)
+    (layer::G1Layer)(x::AbstractMatrix{Float32}) -> Matrix{Float32}
 
-Forward pass for the custom `MyLayer` neural network layer over a batch of inputs.
+Applies the `G1Layer` neural network layer to a batch of atomic environments.
 
-This function computes the output of `MyLayer` by summing the contributions from all neighboring atoms 
-for each sample in the batch. Each contribution is calculated using the cutoff function `fc`, the difference 
-between the input `x` and the learned weights `W_Fs`, the exponential decay weighted by `W_eta`, 
-and scaled by the atomic charge.
+This method computes the response of each neuron (or symmetry function) in the `G1Layer` by summing 
+the contributions from neighboring atoms. Each contribution depends on the distance between atoms, 
+a radial cutoff function, and learned parameters controlling peak position and width. The atomic charge 
+is used as a multiplicative factor.
 
-### Arguments:
-- `layer::MyLayer`: The layer instance containing parameters:
-    - `W_eta`: Weights controlling the decay width of each function, shape `(hidden_dim, input_dim)`.
-    - `W_Fs`: Weights representing the peak positions, shape `(hidden_dim, input_dim)`.
-    - `cutoff`: Cutoff radius applied via the function `fc`.
-    - `charge`: Atomic charge used as a scaling factor.
-- `x`: A 2D array of shape `(batch_size, N_neighbors)` where each row corresponds to one sample's distances
-  to neighboring atoms.
+### Arguments
+- `layer::G1Layer`: The `G1Layer` instance, which includes:
+    - `W_eta::Matrix{Float32}`: Exponential decay weights, shape `(hidden_dim, input_dim)`.
+    - `W_Fs::Matrix{Float32}`: Peak position weights, shape `(hidden_dim, input_dim)`.
+    - `cutoff::Float32`: Cutoff radius for neighbor interaction.
+    - `charge::Float32`: Atomic charge scaling factor.
+- `x::AbstractMatrix{Float32}`: Input distances of shape `(batch_size, N_neighbors)`, 
+  where each row represents distances of one atom to its neighbors.
 
-### Returns:
-- A 2D array of shape `(hidden_dim, batch_size)` containing the output activations for each batch sample.
+### Returns
+- `output::Matrix{Float32}`: Matrix of shape `(hidden_dim, batch_size)`, containing the 
+  symmetry function outputs for each atom in the batch.
 
-### Example:
+### Example
 ```julia
-layer = MyLayer(1, 5, 2.5f0, 1.0f0)  # Layer with 1 input dim, 5 features, cutoff=2.5, charge=1.0
-x = rand(Float32, 3, 10)             # Batch of 3 samples, each with 10 distances
-output = layer(x)                    # Forward pass producing output of shape (3, 5)
-println(output)
+layer = G1Layer(1, 5, 2.5f0, 1.0f0)  # 1 input dim, 5 symmetry functions, cutoff 2.5, charge 1.0
+x = rand(Float32, 3, 10)             # Batch of 3 atoms, each with 10 neighbor distances
+output = layer(x)                    # Output shape: (5, 3)
+
 """
 
-function (layer::MyLayer)(x::AbstractVector{Float32})
-    output = layer(reshape(x, 1, :))  
-    return vec(output)               
-end
 
-function (layer::MyLayer)(x::AbstractMatrix{Float32})
+
+function (layer::G1Layer)(
+  x::AbstractMatrix{Float32}
+  )
+
     batch_size, N_neighbors = size(x)
-    hidden_dim, input_dim = size(layer.W_eta)
+    N_G1 = length(layer.W_eta)
 
-    @assert input_dim == 1
+ 
 
     x_expanded = reshape(x, 1, batch_size, N_neighbors)
-    W_Fs_expanded = reshape(layer.W_Fs, hidden_dim, 1, 1)
-    W_eta_expanded = reshape(layer.W_eta, hidden_dim, 1, 1)
+    W_Fs_expanded = reshape(layer.W_Fs, N_G1, 1, 1)
+    W_eta_expanded = reshape(layer.W_eta, N_G1, 1, 1)
 
     fc_x = fc.(x_expanded, layer.cutoff)
     diff_sq = (x_expanded .- W_Fs_expanded).^2
     exp_term = exp.(-diff_sq .* W_eta_expanded)
     contribution = layer.charge .* fc_x .* exp_term
     sum_over_neighbors = sum(contribution, dims=3)
-    return dropdims(sum_over_neighbors, dims=3)  # (batch_size, hidden_dim)
+
+    return dropdims(sum_over_neighbors, dims=3) # (batch_size, hidden_dim)
 end
 
 
@@ -129,169 +131,192 @@ end
 """
     distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing) -> Array{Float32, 2}
 
-Compute distances between a central atom and all other atoms in a batch of atomic structures.
+Computes distances between a central atom and all other atoms for each structure in a batch.
 
-This function is typically used as a preprocessing step in atom-centered neural network models.
-It calculates the pairwise distances between a specified central atom and all other atoms
-in each structure of a batch. Optional periodic boundary conditions (PBC) are supported.
+Typically used in atom-centered neural networks, this function returns the pairwise distances 
+from a specified central atom to all others in a structure, optionally accounting for periodic 
+boundary conditions (PBC).
 
 ### Arguments
-- `x::Array{Float32, 3}`: A tensor of shape `(batch_size, num_atoms, 3)`, where each structure contains `num_atoms` atoms with 3D coordinates.
-- `central_atom_idx::Int`: Index of the central atom in each structure (1-based indexing).
-- `lattice::Union{Nothing, Matrix{Float32}}=nothing`: Optional 3×3 lattice matrix. If provided, PBC are applied using the minimum image convention.
+- `x::Array{Float32, 3}`: Tensor of shape `(batch_size, num_atoms, 3)`, where each entry contains 3D atomic coordinates.
+- `central_atom_idx::Int`: 1-based index of the central atom in each structure.
+- `lattice::Union{Nothing, Matrix{Float32}}=nothing`: Optional `3×3` lattice matrix. If provided, PBC are applied using the minimum image convention.
 
 ### Returns
-- `Array{Float32, 2}`: A matrix of shape `(batch_size, num_atoms - 1)` containing distances from the central atom to all other atoms for each structure in the batch. The distance to the central atom itself is excluded.
+- `Array{Float32, 2}`: Matrix of shape `(batch_size, num_atoms - 1)` with distances from the central atom to all other atoms, excluding self-distance.
 
 ### Notes
-- The output excludes the distance from the central atom to itself.
-- If `lattice` is specified, distances are computed using periodic boundary conditions.
-- The order of output distances matches the input atom order, with the central atom removed.
+- Atom ordering in the output matches the input, with the central atom removed.
+- Adds a small epsilon (`1e-7`) before square root for numerical stability.
+- PBC not yet implemented in the callable form; `lattice` is accepted only in the standalone function.
 
 ### Example
 ```julia
-x = rand(Float32, 8, 5, 3)  # 8 structures, each with 5 atoms in 3D
-distances = distance_layer(x, 2)  # Compute distances from atom 2
+x = rand(Float32, 8, 5, 3)          # 8 structures, each with 5 atoms
+distances = distance_layer(x, 2)   # Compute distances from atom 2
+
+"""
+
+"""
+    (d::DistanceLayer)(x::Matrix{Float32}) -> Matrix{Float32}
+
+Apply the `DistanceLayer` to a batch of flattened atomic structures.
+
+Assumes `x` is of shape `(batch_size, num_atoms * 3)`, where each row contains 3D coordinates 
+of all atoms in a structure. Computes distances from the specified central atom to all others.
+
+See also: [`distance_layer`](@ref).
 """
 
 
-function distance_layer(
-    x::Union{Array{Float32,3}, Array{Float32,2}}, 
-    central_atom_idx::Int, 
-    lattice::Union{Nothing, Matrix{Float32}} = nothing
-)
-    # Normalizza x per avere shape (batch_size, N, 3)
-    if ndims(x) == 2
-        x = reshape(x, 1, size(x, 1), size(x, 2))
-    elseif ndims(x) != 3
-        error("Input x must be of shape (N, 3) or (batch_size, N, 3)")
-    end
+struct DistanceLayer
+    central_atom_idx::Int
+end
 
-    batch_size, N, _ = size(x)
-    use_pbc = lattice !== nothing
-    inv_lat = use_pbc ? inv(lattice) : nothing
+Flux.@layer DistanceLayer trainable = ()
 
-    # Coordinate relative rispetto all'atomo centrale
-    xi = x[:, central_atom_idx, :]  # shape: (batch_size, 3)
-    xi = reshape(xi, batch_size, 1, 3)  # shape: (batch_size, 1, 3)
-    dx = x .- xi  # broadcasting: (batch_size, N, 3)
+function (d::DistanceLayer)(x)
+    batch_size, total_coords = size(x)
+    N_atoms = div(total_coords, 3)
 
-    # TODO: PBC (periodic boundary conditions), attualmente ignorate
+    coords = reshape(x, batch_size, 3, N_atoms)  # (B, 3, N)
+    coords = permutedims(coords, (1, 3, 2))      # (B, N, 3)
+    xi = reshape(coords[:, d.central_atom_idx, :], batch_size, 1, 3)
+    dx = coords .- xi
 
-    # Calcola distanze euclidee evitando NaN
-    dx2 = sum(dx.^2, dims=3)  # shape: (batch_size, N, 1)
-    eps = Float32(1e-7)  # piccolo valore per evitare sqrt(0)
-    distances_all = sqrt.(dx2 .+ eps)[:, :, 1]  # (batch_size, N)
+    dx2 = sum(dx .^ 2, dims=3)
+    distances_all = sqrt.(dx2 .+ Float32(1e-7))[:, :, 1]
 
-    # Rimuovi la colonna centrale (non distanza da sé stesso)
-    if central_atom_idx == 1
+    # Remove self-distance
+    if d.central_atom_idx == 1
         distances = distances_all[:, 2:end]
-    elseif central_atom_idx == N
+    elseif d.central_atom_idx == N_atoms
         distances = distances_all[:, 1:end-1]
     else
-        distances = cat(distances_all[:, 1:central_atom_idx-1], distances_all[:, central_atom_idx+1:end]; dims=2)
+        distances = hcat(distances_all[:, 1:d.central_atom_idx-1], distances_all[:, d.central_atom_idx+1:end])
     end
 
-    return distances  # shape: (batch_size, N-1)
+    return distances
 end
 
 
 
+"""
+    BranchLayer
+
+Encapsulates the per-atom submodel:
+- Computes distances to neighbors via a `DistanceLayer`.
+- Predicts atomic energy via a species-specific subnetwork (`Chain`).
+
+Call signature: `branch(x::Matrix{Float32}) -> Vector{Float32}`
+"""
+
+
+
+struct BranchLayer
+    distance_layer::DistanceLayer
+    species_model::Chain
+end
+
+Flux.@layer BranchLayer
+
+function (b::BranchLayer)(x)
+    return b.species_model(b.distance_layer(x))
+end
 
 """
-    build_total_model_inline(
-      species_order::Vector{String},
-      G1_number::Int,
-      R_cutoff::Float32;
-      lattice::Union{Nothing, Matrix{Float32}} = nothing
-    ) -> Chain
+    SumBranchesLayer
 
-Constructs a complete Flux model that predicts the total energy of a molecular structure by
-processing each atom individually and summing their predicted atomic energies.
+Aggregates energy predictions from multiple `BranchLayer`s, one per atom, by summing them.
 
-For each atom in the structure, the model:
-1. Computes interatomic distances from atomic coordinates using a custom `distance_layer`.
-2. Applies a species-specific subnetwork that includes a custom `MyLayer` followed by
-   dense layers to predict the atomic energy.
-3. Aggregates all atomic energies by summation to obtain the total energy for the structure.
+Call signature: `model(x) -> total_energy::Float32`
+"""
 
-### Arguments:
-- `species_order::Vector{String}`  
-  Vector of length N specifying the species label for each atom (e.g., `"H"`, `"C"`, `"O"`).
 
-- `G1_number::Int`  
-  Number of features/output units in the custom `MyLayer` and input dimension of the first Dense layer.
+struct SumBranchesLayer
+    branches::Vector{BranchLayer}
+end
 
-- `R_cutoff::Float32`  
-  Cutoff radius parameter passed to `MyLayer` to limit the interaction range.
+Flux.@layer SumBranchesLayer
 
-- `lattice::Union{Nothing, Matrix{Float32}} = nothing` (optional)  
-  Optional lattice matrix for applying periodic boundary conditions (PBC) in distance calculations.  
-  If `nothing`, no PBC are applied.
+function (s::SumBranchesLayer)(x)
+    sum(branch(x) for branch in s.branches)
+end
 
-### Returns:
-- `Chain`  
-  A Flux model where each atomic branch consists of:
-  - A distance calculation layer computing distances of that atom to all others (using `distance_layer`).
-  - A species-specific subnetwork (custom `MyLayer` + Dense layers) that outputs the atomic energy scalar.
-  
-  All atomic energies are concatenated and then summed to produce the total energy prediction.
+"""
+    build_branch(atom::String, G1_number::Int, R_cutoff::Float32) -> Chain
 
-### Usage Example:
+Builds a per-species subnetwork consisting of:
+- A `G1Layer` configured with species charge.
+- A single Dense layer with tanh activation to output scalar atomic energy.
 
+The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
+"""
+
+
+
+function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
+    ion_charge = 0.1f0 * element_to_charge[Atom_name]
+    return Chain(
+        G1Layer(G1_number, R_cutoff, ion_charge),
+        Dense(G1_number, 15, tanh),
+        Dense(15, 10, tanh),
+        Dense(10,5, tanh),
+        Dense(5, 1)
+    )
+end
+
+
+"""
+    build_model(
+        species_order::Vector{String},
+        G1_number::Int,
+        R_cutoff::Float32;
+        lattice::Union{Nothing, Matrix{Float32}} = nothing
+    ) -> SumBranchesLayer
+
+Construct a Flux model that predicts the total energy of a molecular structure by summing atom-wise energy predictions.
+
+For each atom, the model computes its distance to all other atoms, processes the resulting distances through a 
+species-specific subnetwork, and sums all atomic contributions to obtain the total energy.
+
+### Arguments
+- `species_order::Vector{String}`: Vector listing the chemical species (e.g., `"H"`, `"C"`, `"O"`) of each atom in the structure.
+- `G1_number::Int`: Number of radial symmetry functions (G1) used in the input layer.
+- `R_cutoff::Float32`: Cutoff radius applied in the `G1Layer` to limit neighbor interactions.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional `3×3` lattice matrix. If provided, periodic boundary conditions can be applied (⚠️ not currently used in implementation).
+
+### Returns
+- A Flux-compatible model (`SumBranchesLayer`) composed of:
+    - One `BranchLayer` per atom in the input, each handling distance computation and atom-specific energy prediction.
+    - The outputs from all branches are summed to obtain the total predicted energy.
+
+### Notes
+- Each atomic branch uses a `DistanceLayer` to compute distances, and a `G1Layer` + Dense layer to predict energy.
+- The current implementation assumes flattened coordinate inputs of shape `(batch_size, N_atoms * 3)`.
+
+### Example
 ```julia
-species_order = ["H", "H", "O", "C"]
-G1_number = 5
-R_cutoff = 6.0f0
-lattice = nothing  # or a 3x3 Float32 matrix for PBC
-
-model = build_total_model(species_order, G1_number, R_cutoff; lattice=lattice)
-
-# Input x should be a tuple of atomic coordinate arrays, one per atom:
-# For example, x = (x1, x2, ..., xN), where each xi is (num_neighbors, 3) or similar shape.
-# Then: y_pred = model(x)
+species_order = ["H", "H", "O"]
+model = build_total_model_inline(species_order, 5, 6.0f0)
+y_pred = model(x)  # where x is a tuple of size-3 coordinate arrays
 """
 
+function build_model(species_order::Vector{String}, G1_number::Int, R_cutoff::Float32)
+    unique_species = unique(species_order)
+    species_models = Dict(sp => build_branch(sp, G1_number, R_cutoff) for sp in unique_species)
 
-struct TotalModel
-    branches::Vector{Chain}
+    branches = [
+        BranchLayer(DistanceLayer(i), species_models[species_order[i]])
+        for i in eachindex(species_order)
+    ]
+  
+    return SumBranchesLayer(branches)
+
 end
 
-Flux.@layer TotalModel
-
-function (m::TotalModel)(input)
-    outputs = map(branch -> branch(input), m.branches)
-    summed = sum(outputs)
-    return reshape(summed, :)
-end
 
 
-
-function build_model(
-    species_order::Vector{String},
-    G1_number::Int,
-    R_cutoff::Float32;
-    lattice::Union{Nothing, Matrix{Float32}} = nothing
-)
-
-    N = length(species_order)
-
-    branches = [begin
-        atom = species_order[i]
-        charge = 0.1f0 * element_to_charge[atom]
-
-        Chain(
-            x -> distance_layer(x, i, lattice),
-            MyLayer(1, G1_number, R_cutoff, charge),
-            Dense(G1_number, 15, tanh),
-            Dense(15, 10, tanh),
-            Dense(10, 5, tanh),
-            Dense(5, 1)
-        )
-    end for i in 1:N]
-
-    return TotalModel(branches)
-end
 
 
 
@@ -337,54 +362,77 @@ println("Loss: ", loss)
 """
 
 
-function loss_function(model, data, target::Union{Vector{Dict{Symbol, Any}}, Dict{Symbol, Any}}; lambda = 0.1)
+function loss_function(model, data, target ; lambda = 0.1)
     # data shape: (batch_size, N_atoms, features)
     # model output shape: (batch_size,)
 
 
+
+
     if typeof(target) == Dict{Symbol, Any}
 
-      energy = target[:energy]
+      energies = target[:energy]
 
       forces = target[:forces]
 
     else
 
-      energy = [d[:energy] for d in target]
+      energies = [d[:energy] for d in target]
       forces = [d[:forces] for d in target]
 
     end
+
     
-    
-    preds = model(data)  
- 
-    forces_preds = calculate_forces(model,data)
+    energies_preds = model(data)'  
+
+   
+    #forces_preds = calculate_forces(model,data)
+    forces_preds = 0
+
 
     # forward pass on entire batch
-    energy_losses = abs2.(preds .- energy)  # elementwise squared error
-
-
+    energy_losses = (energies .- energies_preds) .^2
+  
+    """
     force_losses = [
-        mean((forces_preds[i] .- forces[i]).^2) for i in 1:length(forces)
-    ] #this is already normalized by 3*num_atoms
-    losses = energy_losses .+ lambda .* force_losses
-    
+          mean((forces_preds[i] .- forces[i]) .^ 2 ) for i in eachindex(forces_preds)
+      ] #this is already normalized by 3*num_atoms
 
-    println("ho calcolato le loss: ", losses)
+    """
+
+ 
+
+    #losses = energy_losses .+ lambda .* force_losses
+    losses = energy_losses 
+
     return mean(losses)            # mean loss over batch
 end
 
-function calculate_forces(model, data)
-    if ndims(data) == 3
-        n_batches = size(data, 1)
-        forces = [Zygote.gradient(x->model(x)[1], data[i, :, :])[1] for i in 1:n_batches]
-    elseif ndims(data) == 2
-        forces = Zygote.gradient(x->model(x)[1], data)[1]
-    else
-        error("Data must be a 2D or 3D array (single sample or batch of samples)")
+function calculate_forces(model, data)  
+
+
+    if ndims(data) == 2
+      N_atoms = size(data)[1]
+      data=reshape(data,(1,N_atoms,3))
     end
+    n_batches = size(data, 1)
+    println(data[1,:,:])
+    dx = zeros(Float32, size(x_sample))
+
+
+    forces = [Flux.gradient((m,x) -> m(x)[1], Const(model), Enzyme.Duplicated(x_sample[i,:],dx[i,:])) for i in 1:n_batches]
+    
+
+
+    println("forze: ", forces)
+
+  
+
     return forces
 end
+
+
+
 
 """
     loss_function_no_forces(model, data, energies)
@@ -412,7 +460,7 @@ function loss_function_no_forces(model, data, target::Union{Vector{Dict{Symbol, 
     end
     
     
-    preds = model(data)  
+    preds = model(data)'  
  
 
     # forward pass on entire batch
@@ -480,10 +528,10 @@ Trains a neural network model to predict total energies of atomic structures.
 - `best_model::Flux.Chain`:  
   The best-performing model on the validation set.
 
-- `loss_train::Vector{Float64}`:  
+- `loss_train::Vector{Float32}`:  
   Training loss per epoch.
 
-- `loss_val::Vector{Float64}`:  
+- `loss_val::Vector{Float32}`:  
   Validation loss per epoch.
 
 # Notes
@@ -491,75 +539,87 @@ Trains a neural network model to predict total energies of atomic structures.
 - The best model (lowest validation loss) is saved and returned.
 """
 
+
 function train_model!(
   model,
-  x_train::Any, 
-  y_train::Vector{Dict{Symbol, Any}}, 
-  x_val::Any, 
-  y_val::Vector{Dict{Symbol, Any}}, 
+  x_train::Any,
+  y_train::Vector{Dict{Symbol, Any}},
+  x_val::Any,
+  y_val::Vector{Dict{Symbol, Any}},
   loss_function::Function;
-  initial_lr=0.01, min_lr=1e-5, decay_factor=0.5, patience=25, 
+  initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
   epochs=3000, batch_size=32, verbose=true
 )
 
-  # Initialize optimizer
-  opt_state = Flux.setup(Adam(initial_lr), model)
+  opt = Flux.setup(Adam(initial_lr), model)
 
-  # Store best models and best loss
+
+  current_lr = initial_lr
+  best_model = deepcopy(model)
   best_epoch = 0
   best_loss = Inf
-  best_model = nothing
-
-  # Loss tracking
-  loss_train = zeros(Float32, epochs)
-  loss_val = zeros(Float32, epochs)
   no_improve_count = 0
 
- 
+  loss_train = zeros(Float32, epochs)
+  loss_val = zeros(Float32, epochs)
 
-  @showprogress for epoch in 1:epochs
-      for i in 1:batch_size:size(x_train, 1)
-          end_index = min(i + batch_size - 1, size(x_train, 1))
-          x_batch = x_train[i:end_index,:,:]
-          y_batch = y_train[i:end_index]
+  for epoch in 1:epochs
+    # Shuffle data
+    idx = randperm(size(x_train, 1))
+    x_train = x_train[idx, :, :]
+    y_train = y_train[idx]
+
+    for i in 1:batch_size:size(x_train, 1)
+      end_idx = min(i + batch_size - 1, size(x_train, 1))
+      x_batch = x_train[i:end_idx, :, :]
+      y_batch = y_train[i:end_idx]
+
+      dup_model = Enzyme.Duplicated(model)
+
+      grads = Flux.gradient((m,x,y) -> loss_function(m,x,y), dup_model, Const(x_batch), Const(y_batch))
       
-          Flux.train!(loss_function, model, [(x_batch, y_batch)], opt_state)
- 
+
+      Flux.update!(opt, model, grads[1])
+
+      
+    end
+
+    # Loss evaluation
+    loss_train[epoch] = loss_function(model, x_train , y_train)
+    loss_val[epoch] = loss_function(model, x_val , y_val)
+
+    if verbose && epoch%10 == 0
+      println("Epoch $(lpad(epoch,4)) | Train Loss: $(round(loss_train[epoch], digits=6)) | Val Loss: $(round(loss_val[epoch], digits=6))")
+    end
+
+
+    # Model checkpoint
+    if loss_val[epoch] < best_loss * 0.98
+      best_loss = loss_val[epoch]
+      best_epoch = epoch
+      best_model = deepcopy(model)
+      no_improve_count = 0
+    else
+      no_improve_count += 1
+    end
+
+    # Learning rate decay
+    if no_improve_count >= patience
+      new_lr = max(current_lr * decay_factor, min_lr)
+      opt = Flux.setup(Adam(new_lr), model)
+      current_lr = new_lr
+      no_improve_count = 0
+      if verbose
+        println("Reducing learning rate to $new_lr at epoch $epoch")
       end
-
-
-      # Compute losses for training and validation
-      loss_train[epoch] = loss_function(model, x_train, y_train)
-      loss_val[epoch] = loss_function(model, x_val, y_val)
-
-      # Save best model if improved
-      if loss_val[epoch] < best_loss * 0.98
-          best_epoch = epoch
-          best_loss = loss_val[epoch]
-          best_model = deepcopy(model)
-          no_improve_count = 0
-      else
-          no_improve_count += 1
-      end
-
-      # Adjust learning rate if no improvement
-      if no_improve_count >= patience
-          new_lr = max(initial_lr * decay_factor, min_lr)
-          opt_state = Flux.setup(Adam(new_lr), model)
-          no_improve_count = 0
-          if verbose
-              println("Reducing learning rate to $(new_lr) at epoch $epoch")
-          end
-      end
+    end
   end
 
   if verbose
-      println("Final Training Loss: $(loss_function(model, x_train, y_train))")
-      println("Final Validation Loss: $(loss_function(model, x_val, y_val))")
-      println("The best model was found at epoch: $best_epoch")
+    println("Final Train Loss: $(loss_function(model, x_train, y_train))")
+    println("Final Val Loss:   $(loss_function(model, x_val, y_val))")
+    println("Best Model Found at Epoch $best_epoch with Val Loss: $best_loss")
   end
 
-  return best_model, loss_train, loss_val
+  return model, best_model, loss_train, loss_val
 end
-
-

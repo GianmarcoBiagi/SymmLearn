@@ -117,13 +117,14 @@ function create_nn_input(dataset::Array{Float32, 3}, num_atoms::Int32)
     num_datasets = size(dataset, 3)
 
     # Output array: (num_datasets, num_atoms, 3)
-    nn_input = Array{Float32, 3}(undef, num_datasets, num_atoms, 3)
+    nn_input = Array{Float32, 2}(undef, num_datasets, num_atoms*3)
 
     for i in 1:num_datasets
         current_structure = dataset[:, :, i]
         for j in 1:num_atoms
-            pos = current_structure[1:3, j]  # Coordinates assumed to be in columns 2, 3, 4
-            nn_input[i, j, :] = pos
+            pos = current_structure[1:3, j] 
+            nn_input[i, 1+(j-1)*3:j*3] = pos
+
         end
     end
 
@@ -174,31 +175,39 @@ end
 
 
 """
-    data_preprocess(input_data, target; split=[0.7, 0.15, 0.15])
+    data_preprocess(input_data, target; split=[0.6, 0.2, 0.2])
 
-Preprocesses input and target data for training a neural network model. It splits the dataset, 
-performs separate normalization for energies and forces, and structures the output.
+Preprocesses input and target data for training a neural network model. This version assumes
+that `input_data` is already flattened, with each structure represented as a row vector of 
+length `3 * n_atoms`. The function splits the dataset, performs normalization, and repackages 
+the output in a suitable format for training.
 
 # Arguments
-- `input_data`: Input features (e.g. atomic environments), shaped as `(n_structures, n_atoms, ...)`.
-- `target`: A vector of dictionaries where each entry has:
-    - `:energy`: total system energy (Float32).
-    - `:forces`: vector of forces for each atom (Float32 vector of length 3 * n_atoms).
-- `split`: A vector of Float64 values indicating train/validation/test split proportions (default `[0.7, 0.15, 0.15]`).
+- `input_data::Array{<:Real, 2}`: Input features of shape `(N_structures, 3 * n_atoms)`.
+- `target::Vector{Dict}`: A vector of dictionaries where each entry contains:
+    - `:energy`: Total system energy (`Float32`).
+    - `:forces`: Flattened force vector (`Float32`, of length `3 * n_atoms`).
+- `split::Vector{Float64}` (optional): Proportions for splitting data into 
+  train/validation/test sets. Must sum to 1. Default is `[0.6, 0.2, 0.2]`.
 
 # Returns
 A tuple containing:
-- `(x_train, y_train)`: Training input and target.
-- `(x_val, y_val)`: Validation input and target.
-- `(x_test, y_test)`: Test input and target.
+- `(x_train, y_train)`: Training inputs and targets.
+- `(x_val, y_val)`: Validation inputs and targets.
+- `(x_test, y_test)`: Test inputs and targets.
 - `energy_mean, energy_std`: Mean and standard deviation used for energy normalization.
 - `forces_mean, forces_std`: Mean and standard deviation used for force normalization.
 
 # Notes
-- Energies undergo a double Z-score normalization.
-- Forces are normalized using standard Z-score.
-
+- Input features must already be flattened (i.e., shaped `(N, 3 * n_atoms)`).
+- Energies are normalized using **double Z-score normalization** (Z-score applied twice).
+- Forces are normalized using standard **Z-score normalization**.
+- Outputs `x_train`, `x_val`, `x_test` maintain the same shape as `input_data`.
+- Targets (`y_train`, `y_val`, `y_test`) are repackaged into dictionaries with:
+    - `:energy`: normalized scalar
+    - `:forces`: reshaped matrix of shape `(n_atoms, 3)` for each structure
 """
+
 function data_preprocess(input_data, target; split=[0.6, 0.2, 0.2]::Vector{Float64})
 
     ##### --- Extract energy and forces --- #####
@@ -241,17 +250,16 @@ function data_preprocess(input_data, target; split=[0.6, 0.2, 0.2]::Vector{Float
     f_test  .= (f_test  .- forces_mean) ./ forces_std
 
     ##### --- Repack normalized targets --- #####
-    n_atoms = size(input_data)[2]
-  
+    n_atoms = size(input_data, 2) ÷ 3  # Since input is (N, 3 * n_atoms)
 
-    y_train = [Dict(:energy => e_train[i], :forces => reshape(f_train[i, :], (n_atoms, 3))) for i in 1:length(e_train)]
-    y_val   = [Dict(:energy => e_val[i],   :forces => reshape(f_val[i, :],   (n_atoms, 3))) for i in 1:length(e_val)]
-    y_test  = [Dict(:energy => e_test[i],  :forces => reshape(f_test[i, :],  (n_atoms, 3))) for i in 1:length(e_test)]
-
+    y_train = [Dict(:energy => e_train[i], :forces => reshape(f_train[i, :], (n_atoms, 3))) for i in eachindex(e_train)]
+    y_val   = [Dict(:energy => e_val[i],   :forces => reshape(f_val[i, :],   (n_atoms, 3))) for i in eachindex(e_val)]
+    y_test  = [Dict(:energy => e_test[i],  :forces => reshape(f_test[i, :],  (n_atoms, 3))) for i in eachindex(e_test)]
 
     ##### --- Return --- #####
     return (x_train, y_train), (x_val, y_val), (x_test, y_test), energy_mean, energy_std, forces_mean, forces_std
 end
+
 
 
 

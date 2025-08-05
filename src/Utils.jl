@@ -236,18 +236,21 @@ println(result)  # This will output the result of the cutoff function for Rij=1.
 
 """
 
-function fc(Rij::T, Rc::T) :: T where T
+function fc(
+    #Rij::T, Rc::T
+    Rij, Rc
+    ) 
     if Rij >= Rc
-        return zero(T)
+        return zero(Float32)
     end
 
-    ε = eps(T)  
+    ε = eps(Float32)  
     denom = 1 - (Rij / Rc)^2
     if denom < ε
-        return zero(T)
+        return zero(Float32)
     end
 
     arg = 1 - 1 / denom
-    return exp(arg)
+    return (exp(arg))
 end
 

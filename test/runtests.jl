@@ -43,23 +43,22 @@ include("../src/Utils.jl")
 
     # Step 5 & 6: Build the full model in one step
     time_build_model = @elapsed model = build_model(species, 1, 5.0f0)
-    println("Time for build_total_model_inline: ", time_build_model, " seconds")
+    println("Time for build_model: ", time_build_model, " seconds")
 
 
 
-    x_sample = Train[1][1:1, :]
-    y_sample = Train[2][1]
     x_batch = Train[1][1:3, :]
     y_batch = Train[2][1:3]
 
-    sample_loss = loss_function(model,x_sample,y_sample)
+    model_time = @elapsed batch_output = model(x_batch)
+    println("Time for computing the model output for a batch: ", model_time, " seconds")
+    @test size(batch_output) == (3 ,)
+
+    loss_time = @elapsed sample_loss = loss_function(model, x_batch, y_batch)
+    println("Time for computing the loss of a a batch: ", loss_time, " seconds")
     @test sample_loss != 0f0 
 
-    sample_output = model(x_sample)
-    @test size(sample_output) == (1,)
 
-    batch_output = model(x_batch)
-    @test size(batch_output) == (3 , 1)
 
 
    

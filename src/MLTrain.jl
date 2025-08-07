@@ -197,10 +197,10 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
     ion_charge = 0.1f0 * element_to_charge[Atom_name]
     return Chain(
         G1Layer(G1_number, R_cutoff, ion_charge),
-        Dense(G1_number, 1, tanh),
-        #Dense(15, 10, tanh),
-        #Dense(10,5, tanh),
-        #Dense(5, 1)
+        Dense(G1_number, 15, tanh),
+        Dense(15, 10, tanh),
+        Dense(10,5, tanh),
+        Dense(5, 1)
     )
 end
 

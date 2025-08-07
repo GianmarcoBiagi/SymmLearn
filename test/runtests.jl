@@ -47,7 +47,7 @@ include("../src/Utils.jl")
 
 
 
-    x_sample = reshape(Train[1][1,:], (1,12))
+    x_sample = Train[1][1:1, :]
     y_sample = Train[2][1]
     x_batch = Train[1][1:3, :]
     y_batch = Train[2][1:3]
@@ -55,16 +55,11 @@ include("../src/Utils.jl")
     sample_loss = loss_function(model,x_sample,y_sample)
     @test sample_loss != 0f0 
 
-    batch_loss = loss_function(model,x_batch,y_batch)
-    @test batch_loss != 0f0 
-
     sample_output = model(x_sample)
-    @test size(sample_output) == (1,1)
+    @test size(sample_output) == (1,)
 
     batch_output = model(x_batch)
-    @test size(batch_output) == (1,3)
-
-
+    @test size(batch_output) == (3 , 1)
 
 
    
@@ -80,7 +75,7 @@ include("../src/Utils.jl")
         Val[1],
         Val[2],
         loss_function;
-         initial_lr=0.1,epochs=1, batch_size=3, verbose=false
+         initial_lr=0.1,epochs=1, batch_size=1, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")
 

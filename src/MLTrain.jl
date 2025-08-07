@@ -110,8 +110,6 @@ function (layer::G1Layer)(
     batch_size, N_neighbors = size(x)
     N_G1 = length(layer.W_eta)
 
- 
-
     x_expanded = reshape(x, 1, batch_size, N_neighbors)
     W_Fs_expanded = reshape(layer.W_Fs, N_G1, 1, 1)
     W_eta_expanded = reshape(layer.W_eta, N_G1, 1, 1)
@@ -129,119 +127,59 @@ end
 
 
 """
-    distance_layer(x::Array{Float32, 3}, central_atom_idx::Int, lattice::Union{Nothing, Matrix{Float32}}=nothing) -> Array{Float32, 2}
+    distance_layer(x::Array{Float32, 2}, central_atom_idx::Int) -> Array{Float32, 2}
 
-Computes distances between a central atom and all other atoms for each structure in a batch.
+Computes the distances between a central atom and all other atoms in each structure of a batch.
 
-Typically used in atom-centered neural networks, this function returns the pairwise distances 
-from a specified central atom to all others in a structure, optionally accounting for periodic 
-boundary conditions (PBC).
+This function is typically used in atom-centered neural networks. It returns pairwise distances 
+from a specified central atom to all others in the structure, **excluding the self-distance**, 
+and assumes input coordinates are given in a flat `(batch_size, num_atoms * 3)` format.
 
 ### Arguments
-- `x::Array{Float32, 3}`: Tensor of shape `(batch_size, num_atoms, 3)`, where each entry contains 3D atomic coordinates.
-- `central_atom_idx::Int`: 1-based index of the central atom in each structure.
-- `lattice::Union{Nothing, Matrix{Float32}}=nothing`: Optional `3×3` lattice matrix. If provided, PBC are applied using the minimum image convention.
+- `x::Array{Float32, 2}`: Tensor of shape `(batch_size, num_atoms * 3)`, where each row contains the flattened 3D coordinates of atoms.
+- `central_atom_idx::Int`: 1-based index of the central atom for which distances are computed.
 
 ### Returns
-- `Array{Float32, 2}`: Matrix of shape `(batch_size, num_atoms - 1)` with distances from the central atom to all other atoms, excluding self-distance.
+- `Array{Float32, 2}`: Matrix of shape `(batch_size, num_atoms - 1)` with distances from the central atom to all others, excluding itself.
 
 ### Notes
+- The self-distance is **not calculated at all**, improving efficiency.
 - Atom ordering in the output matches the input, with the central atom removed.
-- Adds a small epsilon (`1e-7`) before square root for numerical stability.
-- PBC not yet implemented in the callable form; `lattice` is accepted only in the standalone function.
+- A small epsilon (`eps(Float32)`) is added before taking the square root to avoid numerical instability.
+- Periodic boundary conditions (PBC) are not currently supported in this version.
 
 ### Example
 ```julia
-x = rand(Float32, 8, 5, 3)          # 8 structures, each with 5 atoms
-distances = distance_layer(x, 2)   # Compute distances from atom 2
+x = rand(Float32, 8, 5 * 3)          # 8 structures, 5 atoms each (flattened coords)
+distances = distance_layer(x, 2)     # Distances from atom 2 to all others
+
 
 """
 
-"""
-    (d::DistanceLayer)(x::Matrix{Float32}) -> Matrix{Float32}
 
-Apply the `DistanceLayer` to a batch of flattened atomic structures.
-
-Assumes `x` is of shape `(batch_size, num_atoms * 3)`, where each row contains 3D coordinates 
-of all atoms in a structure. Computes distances from the specified central atom to all others.
-
-See also: [`distance_layer`](@ref).
-"""
-
-
-struct DistanceLayer
-    central_atom_idx::Int
-end
-
-Flux.@layer DistanceLayer trainable = ()
-
-function (d::DistanceLayer)(x)
-    batch_size, total_coords = size(x)
+function distance_layer(x, idx::Int)
+    B, total_coords = size(x)
     N_atoms = div(total_coords, 3)
 
-    coords = reshape(x, batch_size, 3, N_atoms)  # (B, 3, N)
-    coords = permutedims(coords, (1, 3, 2))      # (B, N, 3)
-    xi = reshape(coords[:, d.central_atom_idx, :], batch_size, 1, 3)
-    dx = coords .- xi
+    coords = reshape(x, B, 3, N_atoms)     # (B, 3, N)
+    coords = permutedims(coords, (1, 3, 2))  # (B, N, 3)
+
+    xi = reshape(coords[:, idx, :], B, 1, 3)
+
+    mask = trues(N_atoms)
+    mask[idx] = false
+    dx = coords[:, mask, :] .- xi  # (B, N-1, 3)
 
     dx2 = sum(dx .^ 2, dims=3)
-    distances_all = sqrt.(dx2 .+ Float32(1e-7))[:, :, 1]
-
-    # Remove self-distance
-    if d.central_atom_idx == 1
-        distances = distances_all[:, 2:end]
-    elseif d.central_atom_idx == N_atoms
-        distances = distances_all[:, 1:end-1]
-    else
-        distances = hcat(distances_all[:, 1:d.central_atom_idx-1], distances_all[:, d.central_atom_idx+1:end])
-    end
+    distances = sqrt.(dx2 .+ eps(Float32))[:, :, 1]
 
     return distances
 end
 
 
 
-"""
-    BranchLayer
-
-Encapsulates the per-atom submodel:
-- Computes distances to neighbors via a `DistanceLayer`.
-- Predicts atomic energy via a species-specific subnetwork (`Chain`).
-
-Call signature: `branch(x::Matrix{Float32}) -> Vector{Float32}`
-"""
 
 
-
-struct BranchLayer
-    distance_layer::DistanceLayer
-    species_model::Chain
-end
-
-Flux.@layer BranchLayer
-
-function (b::BranchLayer)(x)
-    return b.species_model(b.distance_layer(x))
-end
-
-"""
-    SumBranchesLayer
-
-Aggregates energy predictions from multiple `BranchLayer`s, one per atom, by summing them.
-
-Call signature: `model(x) -> total_energy::Float32`
-"""
-
-
-struct SumBranchesLayer
-    branches::Vector{BranchLayer}
-end
-
-Flux.@layer SumBranchesLayer
-
-function (s::SumBranchesLayer)(x)
-    sum(branch(x) for branch in s.branches)
-end
 
 """
     build_branch(atom::String, G1_number::Int, R_cutoff::Float32) -> Chain
@@ -259,10 +197,10 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
     ion_charge = 0.1f0 * element_to_charge[Atom_name]
     return Chain(
         G1Layer(G1_number, R_cutoff, ion_charge),
-        Dense(G1_number, 15, tanh),
-        Dense(15, 10, tanh),
-        Dense(10,5, tanh),
-        Dense(5, 1)
+        Dense(G1_number, 1, tanh),
+        #Dense(15, 10, tanh),
+        #Dense(10,5, tanh),
+        #Dense(5, 1)
     )
 end
 
@@ -302,20 +240,38 @@ model = build_total_model_inline(species_order, 5, 6.0f0)
 y_pred = model(x)  # where x is a tuple of size-3 coordinate arrays
 """
 
-function build_model(species_order::Vector{String}, G1_number::Int, R_cutoff::Float32)
-    unique_species = unique(species_order)
-    species_models = Dict(sp => build_branch(sp, G1_number, R_cutoff) for sp in unique_species)
+function build_model(
+    species_order::Vector{String},
+    G1_number::Int,
+    R_cutoff::Float32
+) 
 
-    branches = [
-        BranchLayer(DistanceLayer(i), species_models[species_order[i]])
-        for i in eachindex(species_order)
-    ]
-  
-    return SumBranchesLayer(branches)
+    # Costruisci modelli specie unici
+    unique_species = collect(Set(species_order))
+    species_models = Dict{String, Chain}()
+    for sp in unique_species
+        species_models[sp] = build_branch(sp, G1_number, R_cutoff)
+    end
 
-end
+    # Numero atomi
+    N = length(species_order)
 
+    # Crea i branch per ogni atomo con DistanceLayer + modello specie
+    branches = ntuple(i -> Chain(
+        x -> distance_layer(x, i),
+        species_models[species_order[i]]
+    ), N)
 
+    # Parallelizza i branch
+    parallel = Parallel(vcat,branches...)
+
+    # Somma le energie atomiche per batch (output finale)
+    sum_layer = x_tuple -> sum(x_tuple; dims=1)[:]
+
+    # Modello completo
+    return Chain(parallel, sum_layer)
+
+  end
 
 
 
@@ -367,69 +323,52 @@ function loss_function(model, data, target ; lambda = 0.1)
     # model output shape: (batch_size,)
 
 
-
-
     if typeof(target) == Dict{Symbol, Any}
 
       energies = target[:energy]
-
-      forces = target[:forces]
+      forces = target[:forces]'
 
     else
 
       energies = [d[:energy] for d in target]
-      forces = [d[:forces] for d in target]
+      forces = transpose(hcat([d[:forces] for d in target]...))
 
     end
+ 
+    energies_preds = model(data)
 
-    
-    energies_preds = model(data)'  
-
-   
-    #forces_preds = calculate_forces(model,data)
-    forces_preds = 0
-
+    forces_preds = calculate_forces(model,data)
 
     # forward pass on entire batch
-    energy_losses = (energies .- energies_preds) .^2
-  
-    """
-    force_losses = [
-          mean((forces_preds[i] .- forces[i]) .^ 2 ) for i in eachindex(forces_preds)
-      ] #this is already normalized by 3*num_atoms
+    energy_losses = (energies .- energies_preds) .^ 2
 
-    """
+    force_losses = mean(((forces .- forces_preds) .^ 2) , dims = 2)
 
- 
 
-    #losses = energy_losses .+ lambda .* force_losses
-    losses = energy_losses 
+    losses = energy_losses .+ lambda .* force_losses
 
     return mean(losses)            # mean loss over batch
 end
 
-function calculate_forces(model, data)  
+function calculate_forces(model, data)
+    n_batches, n_coord = size(data)
 
-
-    if ndims(data) == 2
-      N_atoms = size(data)[1]
-      data=reshape(data,(1,N_atoms,3))
+    # Funzione helper per calcolare la forza per una singola riga
+    function calc_force(x_row)
+        dx_i = zeros(Float32, size(x_row))  # non può essere evitato per Enzyme
+        grad = Flux.gradient((m, x) -> m(x)[1], Const(model), Enzyme.Duplicated(x_row, dx_i))[2]
+        return -grad
     end
-    n_batches = size(data, 1)
-    println(data[1,:,:])
-    dx = zeros(Float32, size(x_sample))
 
+    # Applica la funzione a ogni riga di data, restituisce matrice forze
+    forces = map(1:n_batches) do i
+        x_row = data[i:i, :]  # sottoarray 1×n
+        calc_force(x_row)
+    end
 
-    forces = [Flux.gradient((m,x) -> m(x)[1], Const(model), Enzyme.Duplicated(x_sample[i,:],dx[i,:])) for i in 1:n_batches]
-    
-
-
-    println("forze: ", forces)
-
-  
-
-    return forces
+    return reduce(vcat, forces)  # stacka tutte le forze in una matrice batch × coord
 end
+
 
 
 
@@ -437,21 +376,17 @@ end
 """
     loss_function_no_forces(model, data, energies)
 
-check documentation for loss_function, this is excatly the same but without using the forces
+check documentation for loss_function, this is the same but without using the forces
 
 
 """
 
 
 function loss_function_no_forces(model, data, target::Union{Vector{Dict{Symbol, Any}}, Dict{Symbol, Any}})
-    # data shape: (batch_size, N_atoms, features)
-    # model output shape: (batch_size,)
-
 
     if typeof(target) == Dict{Symbol, Any}
 
       energy = target[:energy]
-
 
     else
 
@@ -459,22 +394,12 @@ function loss_function_no_forces(model, data, target::Union{Vector{Dict{Symbol, 
 
     end
     
-    
-    preds = model(data)'  
- 
+    preds = model(data)
 
-    # forward pass on entire batch
-    loss = abs2.(preds .- energy)  # elementwise squared error
-
+    loss = abs2.(preds .- energy) 
 
     return mean(loss)          
 end
-
-
-
-
-
-
 
 
 """
@@ -563,15 +488,15 @@ function train_model!(
   loss_train = zeros(Float32, epochs)
   loss_val = zeros(Float32, epochs)
 
-  for epoch in 1:epochs
+  @showprogress for epoch in 1:epochs
     # Shuffle data
     idx = randperm(size(x_train, 1))
-    x_train = x_train[idx, :, :]
+    x_train = x_train[idx, :]
     y_train = y_train[idx]
 
     for i in 1:batch_size:size(x_train, 1)
       end_idx = min(i + batch_size - 1, size(x_train, 1))
-      x_batch = x_train[i:end_idx, :, :]
+      x_batch = x_train[i:end_idx, :]
       y_batch = y_train[i:end_idx]
 
       dup_model = Enzyme.Duplicated(model)

@@ -24,24 +24,20 @@ include("../src/Utils.jl")
 
     
     # Step 2: Create neural network input
-    time_nn_input = @elapsed nn_input_dataset = create_nn_input(dataset, N_atoms)
-    println("Time for create_nn_input: ", time_nn_input, " seconds")
+    time_nn_input = @elapsed nn_input_dataset , all_forces = prepare_nn_data(dataset, N_atoms)
+    println("Time for prepare_nn_data: ", time_nn_input, " seconds")
     @test size(nn_input_dataset) == (size(dataset, 3), N_atoms * 3)
 
 
-    # Step 3: Create neural network target
-    time_nn_target = @elapsed target = create_nn_target(dataset, all_energies)
-    println("Time for create_nn_target: ", time_nn_target, " seconds")
 
-
-    # Step 4: Data preprocessing
-    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, target,split=[0.6, 0.2, 0.2])
+    # Step 3: Data preprocessing
+    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, all_energies, all_forces ,split=[0.6, 0.2, 0.2])
     println("Time for data_preprocess: ", time_preprocess, " seconds")
 
 
     
 
-    # Step 5 & 6: Build the full model in one step
+    # Step 4 build the full model
     time_build_model = @elapsed model = build_model(species, 1, 5.0f0)
     println("Time for build_model: ", time_build_model, " seconds")
 

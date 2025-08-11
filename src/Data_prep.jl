@@ -87,178 +87,134 @@ function extract_data(path::String)
 end
 
 
-
 """
-    create_nn_input(dataset, num_atoms::Int32)
+    prepare_nn_data(dataset::Array{Float32, 3}, num_atoms::Int32) -> (Array{Float32, 2}, Array{Float32, 2})
 
-This function processes a dataset of atomic information and extracts the atomic coordinates 
-for each atom in each structure. This is used as input for a neural network model that requires 
-Cartesian coordinates.
+Converts a 3D dataset of atomic positions and forces into two 2D arrays formatted for neural network input.
 
-### Arguments
-- `dataset::Array{Float32, 3}`: A 3D array where each slice along the third dimension is a structure, 
-  each structure is a matrix of shape (3, num_atoms).
-- `num_atoms::Int`: Number of atoms per structure.
+# Arguments
+- `dataset::Array{Float32, 3}`:  
+  A 3-dimensional array with dimensions `(6, num_atoms, num_samples)`.  
+  The first 3 rows (`1:3`) correspond to atomic positions (x, y, z).  
+  The next 3 rows (`4:6`) correspond to atomic forces (fx, fy, fz).
 
-### Returns
-- `Array{Float32, 3}`: A 3D array of shape `(num_datasets, num_atoms, 3)` where:
-    - `num_datasets` is the number of structures in the dataset.
-    - Each `num_atoms x 3` slice contains the Cartesian coordinates of all atoms in a structure.
+- `num_atoms::Int32`:  
+  Number of atoms in each system/sample.
 
-### Example
-```julia
-coord_input = create_nn_input(dataset, num_atoms=40)
-println(coord_input[1, :, :])  # Prints coordinates of all atoms in the first structure
+# Returns
+- `nn_input::Array{Float32, 2}`:  
+  A 2D array of shape `(num_samples, num_atoms * 3)` where each row contains concatenated atomic positions for one sample.
 
+- `forces::Array{Float32, 2}`:  
+  A 2D array of shape `(num_samples, num_atoms * 3)` where each row contains concatenated atomic forces for one sample.
 
+# Description
+This function processes the input dataset by extracting and flattening the atomic positions and forces from each sample into two separate 2D arrays.  
+The output arrays are suitable for direct input into neural network models that expect flattened feature vectors per sample.
 """
 
-function create_nn_input(dataset::Array{Float32, 3}, num_atoms::Int32)
-    num_datasets = size(dataset, 3)
 
-    # Output array: (num_datasets, num_atoms, 3)
-    nn_input = Array{Float32, 2}(undef, num_datasets, num_atoms*3)
 
-    for i in 1:num_datasets
+function prepare_nn_data(dataset::Array{Float32, 3}, num_atoms::Int32)
+    num_samples = size(dataset, 3)
+
+    # Prepare nn_input array: (num_samples, num_atoms * 3)
+    nn_input = Array{Float32, 2}(undef, num_samples, num_atoms * 3)
+    # Prepare forces array: (num_samples, num_atoms * 3)
+    forces = zeros(Float32, num_samples, num_atoms * 3)
+
+    for i in 1:num_samples
         current_structure = dataset[:, :, i]
-        for j in 1:num_atoms
-            pos = current_structure[1:3, j] 
-            nn_input[i, 1+(j-1)*3:j*3] = pos
 
+        for j in 1:num_atoms
+            # Positions in rows 1:3
+            nn_input[i, 1+(j-1)*3 : j*3] = current_structure[1:3, j]
+            # Forces in rows 4:6
+            forces[i, 1+(j-1)*3 : j*3] = current_structure[4:6, j]
         end
     end
 
-    return nn_input
+    return nn_input, forces
 end
 
-
-
-"""
-    create_nn_target(dataset, all_energies)
-
-Creates a structured target array for neural network training.
-
-# Arguments
-- `dataset::Array{Float32,3}`: A 3D array of shape (features, atoms, samples). Forces are assumed to be at indices 4:6 along the first axis.
-- `all_energies::Vector{Float32}`: A 1D array of total energies for each sample, of length equal to size(dataset, 3).
-
-# Returns
-- `targets::Vector{Dict}`: A vector of dictionaries, one for each sample.
-  Each dictionary contains:
-    - `:energy`: the total energy of the system
-    - `:forces`: a flat Vector{Float32} with all atomic forces concatenated (3 values per atom)
-
-"""
-function create_nn_target(dataset::Array{Float32,3}, all_energies::Vector{Float32})
-    num_samples = size(dataset, 3)   # Number of systems
-    num_atoms = size(dataset, 2)     # Number of atoms per system
-
-    # Extract forces: shape will be (samples, atoms, 3)
-    all_forces = permutedims(dataset[4:6, :, :], (3, 2, 1))
-
-    targets = Vector{Dict}(undef, num_samples)
-
-    for i in 1:num_samples
-        # Flatten the (atoms, 3) matrix of forces into a single vector
-        forces_vec = vec(all_forces[i, :, :])
-
-        # Store energy and forces in a dictionary
-        targets[i] = Dict(
-            :energy => all_energies[i],
-            :forces => forces_vec
-        )
-    end
-
-    return targets
-end
 
 
 
 """
     data_preprocess(input_data, target; split=[0.6, 0.2, 0.2])
 
-Preprocesses input and target data for training a neural network model. This version assumes
-that `input_data` is already flattened, with each structure represented as a row vector of 
-length `3 * n_atoms`. The function splits the dataset, performs normalization, and repackages 
-the output in a suitable format for training.
+Preprocesses input features and target data for neural network training. Assumes each structure's
+input is flattened as a row vector of length `3 * n_atoms`. The dataset is split, normalized, 
+and target data repackaged into `Sample` structs containing normalized energy and force vectors.
 
 # Arguments
-- `input_data::Array{<:Real, 2}`: Input features of shape `(N_structures, 3 * n_atoms)`.
-- `target::Vector{Dict}`: A vector of dictionaries where each entry contains:
-    - `:energy`: Total system energy (`Float32`).
-    - `:forces`: Flattened force vector (`Float32`, of length `3 * n_atoms`).
-- `split::Vector{Float64}` (optional): Proportions for splitting data into 
-  train/validation/test sets. Must sum to 1. Default is `[0.6, 0.2, 0.2]`.
+- `input_data::Array{<:Real, 2}`: Input features with shape `(N_structures, 3 * n_atoms)`.
+- `target::Vector{Dict}`: Vector of dictionaries, each with keys:
+    - `:energy` (`Float32`): Total system energy.
+    - `:forces` (`Vector{Float32}`): Flattened forces vector of length `3 * n_atoms`.
+- `split::Vector{Float64}` (optional): Proportions for train/validation/test splits, summing to 1 (default `[0.6, 0.2, 0.2]`).
 
 # Returns
 A tuple containing:
-- `(x_train, y_train)`: Training inputs and targets.
+- `(x_train, y_train)`: Training inputs and targets (`Vector{Sample}`).
 - `(x_val, y_val)`: Validation inputs and targets.
 - `(x_test, y_test)`: Test inputs and targets.
-- `energy_mean, energy_std`: Mean and standard deviation used for energy normalization.
-- `forces_mean, forces_std`: Mean and standard deviation used for force normalization.
+- `energy_mean, energy_std`: Mean and std used for energy normalization.
+- `forces_mean, forces_std`: Mean and std used for force normalization.
 
 # Notes
-- Input features must already be flattened (i.e., shaped `(N, 3 * n_atoms)`).
-- Energies are normalized using **double Z-score normalization** (Z-score applied twice).
-- Forces are normalized using standard **Z-score normalization**.
-- Outputs `x_train`, `x_val`, `x_test` maintain the same shape as `input_data`.
-- Targets (`y_train`, `y_val`, `y_test`) are repackaged into dictionaries with:
-    - `:energy`: normalized scalar
-    - `:forces`: reshaped matrix of shape `(n_atoms, 3)` for each structure
+- Inputs must be flattened (shape `(N, 3 * n_atoms)`).
+- Energies are normalized by single Z-score normalization.
+- Forces are normalized feature-wise by Z-score normalization.
+- Targets are returned as `Sample` structs with:
+    - `.energy`: normalized scalar energy
+    - `.forces`: normalized flattened force vector (`Vector{Float32}`, length `3 * n_atoms`)
 """
 
-function data_preprocess(input_data, target; split=[0.6, 0.2, 0.2]::Vector{Float64})
 
-    ##### --- Extract energy and forces --- #####
-    energies = Float32[entry[:energy] for entry in target]
-    forces   = [entry[:forces] for entry in target]  # Each is a vector of 3 * n_atoms
+struct Sample
+    energy::Float32
+    forces::Array{Float32 , 2}  
+end
 
-    # Convert list of force vectors into a matrix (each row = one structure)
-    force_matrix = reduce(hcat, forces)'  # Shape: (n_structures, 3 * n_atoms)
-    force_matrix = Float32.(force_matrix)
+
+function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::Vector{Float64})
+
+    ϵ = Float32(1e-6)
+
 
     ##### --- Split dataset --- #####
     ((x_train, x_val, x_test), 
      (e_train, e_val, e_test), 
-     (f_train, f_val, f_test)) = partition([input_data, energies, force_matrix], split)
+     (f_train, f_val, f_test)) = partition([input_data, energies, forces], split)
 
-    ##### --- ENERGY: Double Z-score normalization --- #####
-    e_mean1 = mean(e_train)
-    e_std1  = std(e_train, corrected=false)
-    e_train .= (e_train .- e_mean1) ./ e_std1
+    ##### --- ENERGY: Single Z-score normalization --- #####
+    e_mean = mean(e_train) 
+    e_std  = std(e_train, corrected=false) + ϵ
+    e_train .= (e_train .- e_mean) ./ e_std
+    e_val   .= (e_val .- e_mean) ./ e_std
+    e_test  .= (e_test .- e_mean) ./ e_std
 
-    e_mean2 = mean(e_train)
-    e_std2  = std(e_train, corrected=false)
-    e_train .= (e_train .- e_mean2) ./ e_std2
-
-    # Final energy normalization constants (used for denormalization)
-    energy_mean = e_mean2 * e_std1 + e_mean1
-    energy_std  = e_std2 * e_std1
-
-    # Apply same global normalization to val and test
-    e_val  .= (e_val .- energy_mean) ./ energy_std
-    e_test .= (e_test .- energy_mean) ./ energy_std
-
-    ##### --- FORCES: Standard Z-score normalization --- #####
-    all_train_forces = reduce(vcat, eachrow(f_train))
-    forces_mean = mean(all_train_forces)
-    forces_std  = std(all_train_forces, corrected=false)
+    ##### --- FORCES: Feature-wise Z-score normalization --- #####
+    forces_mean = mean(f_train, dims=1)
+    forces_std  = std(f_train, dims=1, corrected=false) .+ ϵ
 
     f_train .= (f_train .- forces_mean) ./ forces_std
     f_val   .= (f_val   .- forces_mean) ./ forces_std
     f_test  .= (f_test  .- forces_mean) ./ forces_std
 
-    ##### --- Repack normalized targets --- #####
-    n_atoms = size(input_data, 2) ÷ 3  # Since input is (N, 3 * n_atoms)
 
-    y_train = [Dict(:energy => e_train[i], :forces => reshape(f_train[i, :], (n_atoms * 3))) for i in eachindex(e_train)]
-    y_val   = [Dict(:energy => e_val[i],   :forces => reshape(f_val[i, :],   (n_atoms * 3))) for i in eachindex(e_val)]
-    y_test  = [Dict(:energy => e_test[i],  :forces => reshape(f_test[i, :],  (n_atoms * 3))) for i in eachindex(e_test)]
+    ##### --- Repack as Sample structs --- #####
+    y_train = [Sample(e_train[i], reshape(f_train[i, :], 1, :)) for i in eachindex(e_train)]
+    y_val   = [Sample(e_val[i],   reshape(f_val[i, :], 1, :))   for i in eachindex(e_val)]
+    y_test  = [Sample(e_test[i],  reshape(f_test[i, :], 1, :))  for i in eachindex(e_test)]
+
 
     ##### --- Return --- #####
-    return (x_train, y_train), (x_val, y_val), (x_test, y_test), energy_mean, energy_std, forces_mean, forces_std
+    return (x_train, y_train), (x_val, y_val), (x_test, y_test), e_mean, e_std, forces_mean, forces_std
 end
+
+
 
 
 
@@ -327,39 +283,39 @@ end
 
 
 """
-    xyz_to_nn_input(file_path::String)
+    xyz_to_nn_input(file_path::String) -> (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, species, all_cells)
 
-Processes an XYZ file to generate input data for a neural network.
+Processes an XYZ file containing atomic structures and energies to generate datasets formatted for neural network training.
 
 # Arguments
-- `file_path::String`: The path to the XYZ file containing atomic structures and energies.
+- `file_path::String`:  
+  Path to the XYZ file that includes atomic coordinates, species information, lattice cells, and energy values.
 
 # Returns
-- `Train`: Training dataset (input-output pairs).
-- `Val`: Validation dataset (input-output pairs).
-- `Test_data`: Test dataset (input-output pairs).
-- `y_mean`: Mean energy value for normalization.
-- `y_std`: Standard deviation of energy values for normalization.
-- `species`: List of atomic species present in the dataset, can be used as an input for the `create_model` function.
-- 'all_cells': List of all the lattice cells of the dataset
+- `Train`: Training dataset consisting of input-output pairs (positions, energies, forces), typically normalized.
+- `Val`: Validation dataset for tuning model hyperparameters.
+- `Test_data`: Test dataset used for final evaluation.
+- `energy_mean::Float64`: Mean of the energy values across the dataset, used for normalization.
+- `energy_std::Float64`: Standard deviation of the energy values, used for normalization.
+- `forces_mean::Float64`: Mean of the forces values, used for normalization.
+- `forces_std::Float64`: Standard deviation of the forces values, used for normalization.
+- `species::Vector{String}`: List of atomic species present in the dataset; useful as input to model creation functions.
+- `all_cells`: List of lattice cell information corresponding to each sample in the dataset.
 
 # Description
-This function extracts atomic structure and energy information from the input XYZ file.
-It then generates an input dataset suitable for neural network training. The data is preprocessed, 
-normalized, and split into training, validation, and test sets.
+This function performs the following steps:  
+1. Extracts atomic structures, species, lattice cells, and energy values from the specified XYZ file using `extract_data`.  
+2. Generates neural network input arrays for atomic positions and forces using `prepare_nn_data`.  
+3. Normalizes energies and forces and splits the data into training, validation, and test sets through `data_preprocess`.  
+The outputs are ready-to-use datasets and normalization parameters for machine learning workflows involving atomic simulations.
 
 # Dependencies
-- `extract_data(file_path)`: Extracts atomic structures, species, cell information, and energies from the input file.
-- `create_nn_input(dataset, all_cells, N_atoms)`: Generates the neural network input dataset from atomic data.
-- `data_preprocess(nn_input_dataset, all_energies)`: Normalizes and splits the dataset into train, validation, and test sets.
+- `extract_data(file_path)`: Parses the XYZ file to obtain raw atomic and energetic data.  
+- `prepare_nn_data(dataset, num_atoms)`: Converts raw atomic data into flattened arrays suitable for NN input.  
+- `data_preprocess(nn_input_dataset, all_energies, all_forces)`: Normalizes data and splits it into subsets.
 
-# Example
 
-```julia
-# Assume `file_path` is the path to your XYZ file
-Train, Val, Test_data, y_mean, y_std, species = xyz_to_nn_input("path_to_file.xyz")
-println(Train)
-println(Val)
+
 """
 
 function xyz_to_nn_input(file_path::String)
@@ -367,16 +323,12 @@ function xyz_to_nn_input(file_path::String)
     # Extract atomic and structural information from the input XYZ file
     N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
 
-    # Create the neural network input dataset
-    nn_input_dataset = create_nn_input(dataset, N_atoms)
+    # Create the neural network input dataset and forces 
+    nn_input_dataset , all_forces = prepare_nn_data(dataset, N_atoms)
 
-    #Create the neural network target 
-
-    target = create_nn_target(dataset, all_energies)
-  
 
     # Preprocess data: normalize, split into train, validation, and test sets
-    Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, target)
+    Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, all_energies, all_forces)
     
     # Return the processed datasets and normalization parameters
     return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, species, all_cells)

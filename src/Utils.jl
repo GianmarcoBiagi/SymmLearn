@@ -254,3 +254,86 @@ function fc(
     return (exp(arg))
 end
 
+
+"""
+    extract_energies(x::Sample)
+
+Return the energy of a single `Sample`.
+
+# Arguments
+- `x::Sample`: a single sample containing energy and forces.
+
+# Returns
+- `energy::AbstractVector`: the energy stored in the sample.
+"""
+function extract_energies(x::Sample)
+    return x.energy
+end
+
+
+"""
+    extract_forces(x::Sample)
+
+Return the forces of a single `Sample`.
+
+# Arguments
+- `x::Sample`: a single sample containing energy and forces.
+
+# Returns
+- `forces::AbstractVector`: the forces stored in the sample.
+"""
+function extract_forces(x::Sample)
+    return x.forces
+end
+
+
+"""
+    extract_energies(X::Vector{Sample})
+
+Return the energies of a batch of samples.
+
+# Arguments
+- `X::Vector{Sample}`: a collection of samples.
+
+# Returns
+- `energies_batch::RowVector{Float32}`: row vector of size `(1, n_batch)`,  
+  where each column contains the energy of one sample.
+"""
+function extract_energies(X::Vector{Sample})
+    n_batch = size(X, 1)
+
+    energies_batch = zeros(Float32, n_batch)
+    for i in 1:n_batch
+        energies_batch[i] = X[i].energy[1]
+    end
+
+    return energies_batch'
+end
+
+
+"""
+    extract_forces(X::Vector{Sample})
+
+Return the forces of a batch of samples.
+
+# Arguments
+- `X::Vector{Sample}`: a collection of samples.
+
+# Returns
+- `forces_batch::Matrix{Float32}`: matrix of size `(n_batch, n_forces)`,  
+  where each row contains the forces of one sample.
+"""
+function extract_forces(X::Vector{Sample})
+    n_batch = length(X)
+    n_forces = length(X[1].forces)  # number of forces per single sample
+
+    forces_batch = zeros(Float32, (n_batch, n_forces))
+    for i in 1:n_batch
+        forces_batch[i, :] = X[i].forces
+    end
+
+    return forces_batch
+end
+
+
+

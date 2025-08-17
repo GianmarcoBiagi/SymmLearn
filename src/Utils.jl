@@ -283,7 +283,7 @@ Return the forces of a single `Sample`.
 - `forces::AbstractVector`: the forces stored in the sample.
 """
 function extract_forces(x::Sample)
-    return x.forces'
+    return x.forces
 end
 
 

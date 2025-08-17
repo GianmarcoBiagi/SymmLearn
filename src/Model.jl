@@ -5,7 +5,6 @@ using Statistics
 
 
 
-
 """
     struct G1Layer
 
@@ -133,59 +132,97 @@ function (layer::G1Layer)(x::AbstractMatrix{Float32})
 end
 
 
-"""
-    distance_matrix_layer(coords::AbstractMatrix)
 
-Compute the pairwise distances between atoms for a batch of coordinate arrays.
+"""
+    distance_matrix_layer(input::Matrix{Vector{AtomInput}})
+
+Compute pairwise distances between atoms for each batch in a matrix of batches.
 
 # Arguments
-- `coords::AbstractMatrix`: a matrix of shape `(batch, 3N)`, where `N` is the number of atoms
-  and each row contains the concatenated x,y,z coordinates of all atoms.
+- `input`: A matrix of batches, where each element is a `Vector{AtomInput}`.
+  Each `AtomInput` has `.species::Int` and `.features::AbstractVector`
+  where `features` contains at least the 3D coordinates.
 
 # Returns
-- `distances::Array{Float64,3}`: array of shape `(batch, N, N-1)`, where for each atom
-  `i` the distances to all other atoms are stored (excluding self-distance).
-
-# Notes
-- Implementation avoids dynamic allocations (no `vcat`, no slicing).
-- Uses nested loops instead of broadcasting to make it compatible with Enzyme.
+- A matrix of the same size as `input`. Each element is a vector of `AtomInput`.
+  For each atom, the `species` is copied from the input, while `features`
+  contains the distances from all other atoms in that batch (length `N-1`).
 """
-
-
-
-
-function distance_matrix_layer(coords::AbstractMatrix)
-    batch, threeN = size(coords)
-    N = div(threeN, 3)
+function distance_matrix_layer(input::Matrix{Vector{AtomInput}})
     ϵ = Float32(1e-7)
+    
+    batches , _ = size(input)
+    N_atoms = size(input[1])[1]
 
-    distances = Array{Float32}(undef, batch, N, N-1)
+    output = Matrix{G1Input}(undef, (batches , N_atoms ))
 
-    @inbounds for b in 1:batch
+
+    for I in 1:batches
+        batch = input[I]
+        N = length(batch)
+        out_batch = Vector{G1Input}(undef, N)
+
         for i in 1:N
+            xi, yi, zi = batch[i].coord[1:3]
+            distances = Matrix{Float32}(undef, (1 , N-1))
             idx = 1
-            xi = coords[b, 3i-2]
-            yi = coords[b, 3i-1]
-            zi = coords[b, 3i]
+
             for j in 1:N
                 if j == i
                     continue
                 end
-                dx = coords[b, 3j-2] - xi
-                dy = coords[b, 3j-1] - yi
-                dz = coords[b, 3j] - zi
-                distances[b, i, idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+                xj, yj, zj = batch[j].coord[1:3]
+                dx, dy, dz = xj - xi, yj - yi, zj - zi
+                distances[1 , idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
                 idx += 1
             end
+
+            out_batch[i] = G1Input(batch[i].species, distances)
         end
+
+        output[I , :] = out_batch
     end
 
-    return distances
+    return output
 end
 
-function distance_matrix_layer(x::AbstractVector{<:AbstractFloat})
-    return distance_matrix_layer(reshape(x, 1, :))
+
+
+function distance_matrix_layer(input::Vector{Vector{AtomInput}})
+    ϵ = Float32(1e-7)
+
+    output = Vector{Vector{G1Input}}(undef, length(input))
+
+
+    for (b, batch) in enumerate(input)
+        N = length(batch)
+        out_batch = Vector{G1Input}(undef, N)
+
+        for i in 1:N
+            xi, yi, zi = batch[i].coord[1:3]
+            distances = Matrix{Float32}(undef, (1 , N-1))
+            idx = 1
+
+            for j in 1:N
+                if j == i
+                    continue
+                end
+                xj, yj, zj = batch[j].coord[1:3]
+                dx, dy, dz = xj - xi, yj - yi, zj - zi
+                distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+                idx += 1
+            end
+
+            # costruiamo un nuovo AtomInput con stessa species ma features = distanze
+            out_batch[i] = G1Input(batch[i].species, distances)
+        end
+
+        output[b] = out_batch
+    end
+
+    return output
 end
+
 
 
 
@@ -205,8 +242,7 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
     ion_charge = element_to_charge[Atom_name]
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
-        Dense(G1_number, 16, tanh), 
-        Dense(16 , 8 , tanh),
+        Dense(G1_number, 8, tanh), 
         Dense(8, 4, tanh),
         Dense(4, 2, tanh),
         Dense(2, 1)
@@ -214,101 +250,97 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
 end
 
 
-# --- Layer that sums atomic contributions ---
-struct SumAtoms end
-function (::SumAtoms)(X::AbstractMatrix)
-    nb, na = size(X)
-    out = similar(X, eltype(X), nb)
-    @inbounds for b in 1:nb
-        acc = zero(eltype(X))
-        @simd for a in 1:na
-            acc += X[b, a]
-        end
-        out[b] = acc
-    end
-    return out
-end
 
-# --- Atom branch (selects distances for one atom and applies its subnetwork) ---
-struct AtomBranch{M}
-    idx::Int
-    model::M
-end
-function (ab::AtomBranch)(x)
-    # x: (n_batch, N, N-1); select distances of atom idx → (n_batch, N-1)
-    Xi = @view x[:, ab.idx, :]
-    return ab.model(Xi)  # should return (n_batch,) or (n_batch, 1)
-end
-
-# --- Parallel layer that applies all branches and stacks outputs ---
-struct ParallelAtoms{B<:Tuple}
-    branches::B
-end
-function (p::ParallelAtoms)(x)
-    nb = size(x, 1)
-    na = length(p.branches)
-
-    # Evaluate first branch and allocate output
-    y1 = vec(p.branches[1](x))   # ensure (nb,)
-    out = similar(y1, nb, na)    # (nb, na)
-    @inbounds @simd for b in 1:nb
-        out[b, 1] = y1[b]
-    end
-
-    # Remaining branches
-    @inbounds for a in 2:na
-        ya = vec(p.branches[a](x))
-        @simd for b in 1:nb
-            out[b, a] = ya[b]
-        end
-    end
-    return out
-end
-
-# --- Build the full model ---
 """
-    build_model(
-        species_order::Vector{String},
-        G1_number::Int,
-        R_cutoff::Float32
-    ) -> Chain
+    build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, G1_number::Int, R_cutoff::Float32)
 
-Builds a Flux model that predicts the total energy of a molecular structure by summing
-atom-wise contributions, sharing subnetwork weights across atoms of the same species.
+Creates an array of Flux `Chain` models, one for each unique species.  
+The array is indexed according to `species_idx`, so that each species can be dispatched
+to the correct model based on its numeric index.  
 
-### Workflow
-1. Computes the full pairwise distance matrix (excluding self-distances).
-2. Each atom branch selects its row from the distance matrix.
-3. A species-specific subnetwork processes these distances.
-4. Atomic contributions are summed into the total energy.
+# Arguments
+- `unique_species::Vector{String}`: List of species names.
+- `species_idx::Dict{String,Int}`: Mapping from species name to numeric index.
+- `G1_number::Int`: Number of neurons in the G1Layer.
+- `R_cutoff::Float32`: Cutoff radius for the G1Layer.
 
-### Arguments
-- `species_order::Vector{String}`: Ordered list of atom species.
-- `G1_number::Int`: Number of G1 radial symmetry functions.
-- `R_cutoff::Float32`: Cutoff radius for neighbor interactions.
-
-### Returns
-- `Chain`: Flux model compatible with Enzyme autodiff.
+# Returns
+- `species_models::Vector{Chain}`: Array of models, ready for Enzyme differentiation.
 """
-function build_model(
-    species_order::Vector{String},
-    G1_number::Int,
-    R_cutoff::Float32
-)
-    branches = ntuple(i -> AtomBranch(
-            i,
-            build_branch(species_order[i], G1_number, R_cutoff)
-        ),
-        length(species_order)
-    )
-
-    return Chain(
-        distance_matrix_layer,   # (n_batch, N, N-1)
-        ParallelAtoms(branches), # (n_batch, N_atoms)
-        SumAtoms()               # (n_batch,)
-    )
+function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
+                              G1_number::Int, R_cutoff::Float32)
+    n_species = length(unique_species)
+    species_models = Vector{Chain}(undef, n_species)
+    
+    for spec in unique_species
+        idx = species_idx[spec]
+        species_models[idx] = build_branch(spec, G1_number, R_cutoff)
+    end
+    
+    return species_models
 end
 
 
+"""
+    dispatch(atoms::Vector{AtomInput}, species_models::Vector{Chain})
 
+Applies the correct model to each atom in `atoms` based on its `species`.  
+Only the numerical `features` are passed to the model, so this is compatible with Enzyme.
+
+# Arguments
+- `atoms::Vector{AtomInput}`: Batch of atoms with `species` and `features`.
+- `species_models::Vector{Chain}`: Array of models, indexed by species numeric ID.
+
+# Returns
+- `outputs::Vector{Float32}`: Output of the correct model for each atom.
+"""
+function dispatch(atoms::Vector{Vector{AtomInput}}, species_models::Vector{Chain})
+    n_batches = size(atoms[1])[1]
+    n_atoms = size(atoms[1,1])[1]
+
+    outputs = Vector{Float32}(undef, n_atoms)
+
+
+    distances = distance_matrix_layer(atoms)
+
+
+    @inbounds for i in 1:n_atoms
+        distance = distances[1][i]
+        model = species_models[distance.species]
+        outputs[i] = model(distance.dist)[1]  # assuming model outputs a 1-element vector
+    end
+
+    outputs = sum(outputs)
+
+    return outputs
+end
+
+function dispatch(atoms::Matrix{Vector{AtomInput}}, species_models::Vector{Chain})
+    n_batches = size(atoms)[1]
+    n_atoms = size(atoms[1,1])[1]
+
+
+    
+    outputs = Matrix{Float32}(undef, (n_batches , n_atoms))
+
+
+    distances = distance_matrix_layer(atoms)
+
+
+
+    @inbounds for i in 1:n_atoms
+        distance = distances[: , i]
+
+        model = species_models[distance[1].species]
+        
+        batch = vcat([d.dist for d in distance]...)
+
+        outputs[: , i] = model(batch) # assuming model outputs a 1-element vector
+
+    end
+
+    final_outputs = sum(outputs , dims = 2)
+
+    return final_outputs
+end
 

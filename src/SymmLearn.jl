@@ -9,11 +9,12 @@ using ExtXYZ
 using Enzyme
 
 
-
+include("Data_prep.jl")
+include("Utils.jl")
 include("Train.jl")
 include("Model.jl")
-include("Data_prep.jl")
 
-export xyz_to_nn_input,create_model,train_model!
+
+export xyz_to_nn_input,create_model,train_model!,dispatch
 
 end

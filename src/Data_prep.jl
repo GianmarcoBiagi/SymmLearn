@@ -1,5 +1,46 @@
 using ExtXYZ
 
+"""
+    AtomInput(species::Int, features::AbstractVector)
+
+Container for one atom in a structure.
+- `species`: integer index in 1..K identifying the species.
+- `coord`: atomic coordinates.
+
+
+"""
+struct AtomInput{T<:AbstractVector}
+    species::Int
+    coord::T
+end
+
+Base.size(ai::AtomInput) = size(ai.coord)
+
+function Base.show(io::IO, atom::AtomInput)
+    coords_str = join(atom.coord, ", ")
+    print(io, "AtomInput(id=$(atom.species), coordinates=[$coords_str])")
+end
+
+"""
+    G1Input(species::Int, features::AbstractVector)
+
+Container for one atom in a structure.
+- `species`: integer index in 1..K identifying the species.
+- `distances`: distances from the atom N and the other N-1 atoms
+
+
+"""
+struct G1Input{T<:AbstractMatrix}
+    species::Int
+    dist::T
+end
+
+Base.size(ai::G1Input) = size(ai.dist)
+
+function Base.show(io::IO, obj::G1Input)
+ 
+    print(io, "G1Input(id= $(obj.species), distances= $(obj.dist))")
+end
 
 
 """
@@ -90,54 +131,54 @@ end
 
 
 """
-    prepare_nn_data(dataset::Array{Float32, 3}, num_atoms::Int32) -> (Array{Float32, 2}, Array{Float32, 2})
+    prepare_nn_data(dataset::Array{Float32,3},
+                    species_order::Vector{String})
 
-Converts a 3D dataset of atomic positions and forces into two 2D arrays formatted for neural network input.
+Convert a dataset of positions+forces into atom-wise inputs for the NN.
 
 # Arguments
-- `dataset::Array{Float32, 3}`:  
-  A 3-dimensional array with dimensions `(6, num_atoms, num_samples)`.  
-  The first 3 rows (`1:3`) correspond to atomic positions (x, y, z).  
-  The next 3 rows (`4:6`) correspond to atomic forces (fx, fy, fz).
-
-- `num_atoms::Int32`:  
-  Number of atoms in each system/sample.
+- `dataset`: Array of shape (6, num_atoms, num_samples).
+- `species_order`: Vector of species strings, length = num_atoms.
 
 # Returns
-- `nn_input::Array{Float32, 2}`:  
-  A 2D array of shape `(num_samples, num_atoms * 3)` where each row contains concatenated atomic positions for one sample.
-
-- `forces::Array{Float32, 2}`:  
-  A 2D array of shape `(num_samples, num_atoms * 3)` where each row contains concatenated atomic forces for one sample.
-
-# Description
-This function processes the input dataset by extracting and flattening the atomic positions and forces from each sample into two separate 2D arrays.  
-The output arrays are suitable for direct input into neural network models that expect flattened feature vectors per sample.
+- `all_structures::Vector{Vector{AtomInput}}`:
+    Each element is a structure (vector of atoms).
+- `forces::Array{Float32,2}`:
+    Shape (num_samples, num_atoms*3), flattened atomic forces.
+- `species_idx::Dict{String,Int}`:
+    Mapping from species name to index, consistent across atoms.
 """
+function prepare_nn_data(dataset::Array{Float32,3},
+                         species_order::Vector{String},
+                         unique_species::Vector{String})
+
+    _, num_atoms, num_samples = size(dataset)
+
+    # build species → index map once
+    species_idx = Dict(s => i for (i, s) in enumerate(unique_species))
 
 
-
-function prepare_nn_data(dataset::Array{Float32, 3}, num_atoms::Int32)
-    num_samples = size(dataset, 3)
-
-    # Prepare nn_input array: (num_samples, num_atoms * 3)
-    nn_input = Array{Float32, 2}(undef, num_samples, num_atoms * 3)
-    # Prepare forces array: (num_samples, num_atoms * 3)
-    forces = zeros(Float32, num_samples, num_atoms * 3)
+    all_structures = Vector{Vector{AtomInput}}(undef, num_samples)
+    forces = Array{Float32}(undef, num_samples, num_atoms * 3)
 
     for i in 1:num_samples
         current_structure = dataset[:, :, i]
+        atoms = Vector{AtomInput}(undef, num_atoms)
 
         for j in 1:num_atoms
-            # Positions in rows 1:3
-            nn_input[i, 1+(j-1)*3 : j*3] = current_structure[1:3, j]
-            # Forces in rows 4:6
-            forces[i, 1+(j-1)*3 : j*3] = current_structure[4:6, j]
+            sp = species_idx[species_order[j]]     # int index
+            feats = @view current_structure[1:3, j] # positions as features
+            atoms[j] = AtomInput(sp, feats)
+            forces[i, (1+(j-1)*3):(3*j)] = current_structure[4:6, j]
         end
+
+        all_structures[i] = atoms
     end
 
-    return nn_input, forces
+    return all_structures, forces, species_idx
 end
+
+
 
 
 
@@ -179,6 +220,11 @@ struct Sample
     
 end
 
+function Base.show(io::IO, target::Sample)
+
+    print(io, "Energy = $(target.energy), Forces = $(target.forces))")
+end
+
 
 
 function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::Vector{Float64})
@@ -200,6 +246,7 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
 
     ##### --- FORCES: Feature-wise Z-score normalization --- #####
     forces_mean = mean(f_train, dims=1)
+
     forces_std  = std(f_train, dims=1, corrected=false) .+ ϵ
 
     f_train .= (f_train .- forces_mean) ./ forces_std
@@ -208,9 +255,9 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
 
 
     ##### --- Repack as Sample structs --- #####
-    y_train = [Sample(e_train[i], reshape(f_train[i, :], 1, :)) for i in eachindex(e_train)]
-    y_val   = [Sample(e_val[i],   reshape(f_val[i, :], 1, :))   for i in eachindex(e_val)]
-    y_test  = [Sample(e_test[i],  reshape(f_test[i, :], 1, :))  for i in eachindex(e_test)]
+    y_train = [Sample(e_train[i], f_train[i, : , :]) for i in eachindex(e_train)]
+    y_val   = [Sample(e_val[i],   f_val[i, : , :])   for i in eachindex(e_val)]
+    y_test  = [Sample(e_test[i],  f_test[i, : , :])  for i in eachindex(e_test)]
 
 
     ##### --- Return --- #####
@@ -221,66 +268,54 @@ end
 
 
 
-
-
-
-
 """
-    partition(data,parts;shuffle,dims,rng)
+    partition(data::Vector{<:AbstractArray}, parts::Vector{Float64}; shuffle=true, rng=Random.GLOBAL_RNG)
 
-Partition (by rows) one or more matrices according to the shares in `parts`.
+Split a list of datasets into multiple parts (e.g., train/val/test).
 
-# Parameters
-* `data`: A matrix/vector or a vector of matrices/vectors
-* `parts`: A vector of the required shares (must sum to 1)
-* `shufle`: Whether to randomly shuffle the matrices (preserving the relative order between matrices)
-* `dims`: The dimension for which to partition [def: `1`]
-* `copy`: Wheter to _copy_ the actual data or only create a reference [def: `true`]
-* `rng`: Random Number Generator (see [`FIXEDSEED`](@ref)) [deafult: `Random.GLOBAL_RNG`]
+- `data`: Vector of datasets (e.g., `[x, e, f]`), each can be array or vector of custom objects.
+- `parts`: Vector of fractions summing to 1.0, e.g., `[0.7, 0.2, 0.1]`.
+- `shuffle`: Whether to shuffle indices before splitting.
+- `rng`: Random number generator.
 
-# Notes:
-* The sum of parts must be equal to 1
-* The number of elements in the specified dimension must be the same for all the arrays in `data`
+Returns a tuple of vectors of splits for each dataset.
+"""
+function partition(data::Vector, parts::Vector{Float64}; shuffle=true, rng=Random.GLOBAL_RNG)
+    N = size(data[1], 1)  # numero di campioni
+    @assert all(size(d,1) == N for d in data) "All datasets must have the same first dimension"
+    @assert sum(parts) ≈ 1 "Sum of `parts` must be 1.0"
 
-# Example:
-```julia
-julia> x = [1:10 11:20]
-julia> y = collect(31:40)
-julia> ((xtrain,xtest),(ytrain,ytest)) = partition([x,y],[0.7,0.3])
- ```
- """
-function partition(data::AbstractArray{T,1},parts::AbstractArray{Float64,1};shuffle=true,dims=1,copy=true,rng = Random.GLOBAL_RNG) where T <: AbstractArray
-        # the sets of vector/matrices
-        N = size(data[1],dims)
-        all(size.(data,dims) .== N) || @error "All matrices passed to `partition` must have the same number of elements for the required dimension"
-        ridx = shuffle ? Random.shuffle(rng,1:N) : collect(1:N)
-        return partition.(data,Ref(parts);shuffle=shuffle,dims=dims,fixed_ridx = ridx,copy=copy,rng=rng)
+    # Shuffle indices
+    ridx = shuffle ? Random.shuffle(rng, 1:N) : collect(1:N)
+
+    # Compute boundaries
+    boundaries = [0; cumsum(round.(Int, parts .* N))]
+    boundaries[end] = N  # ensure last index reaches N
+
+    # Split each dataset
+    splits = []
+    for d in data
+        # determine number of dimensions
+        nd = ndims(d)
+        tmp = []
+        for i in 1:length(parts)
+            idx = ridx[boundaries[i]+1 : boundaries[i+1]]
+            if nd == 1
+                push!(tmp, d[idx])
+            elseif nd == 2
+                push!(tmp, d[idx, :])
+            else
+                # per array ND maggiore di 2
+                slicer = ntuple(j -> j==1 ? idx : Colon(), nd)
+                push!(tmp, d[slicer...])
+            end
+        end
+        push!(splits, tmp)
+    end
+
+    return tuple(splits...)
 end
 
-function partition(data::AbstractArray{T,Ndims}, parts::AbstractArray{Float64,1};shuffle=true,dims=1,fixed_ridx=Int64[],copy=true,rng = Random.GLOBAL_RNG) where {T,Ndims}
-    # the individual vector/matrix
-    N        = size(data,dims)
-    nParts   = size(parts)
-    toReturn = toReturn = Array{AbstractArray{T,Ndims},1}(undef,nParts)
-    if !(sum(parts) ≈ 1)
-        @error "The sum of `parts` in `partition` should total to 1."
-    end
-    ridx = fixed_ridx
-    if (isempty(ridx))
-       ridx = shuffle ? Random.shuffle(rng, 1:N) : collect(1:N)
-    end
-    allDimIdx = convert(Vector{Union{UnitRange{Int64},Vector{Int64}}},[1:i for i in size(data)])
-    current = 1
-    cumPart = 0.0
-    for (i,p) in enumerate(parts)
-        cumPart += parts[i]
-        final = i == nParts ? N : Int64(round(cumPart*N))
-        allDimIdx[dims] = ridx[current:final]
-        toReturn[i]     = copy ? data[allDimIdx...] : @views data[allDimIdx...]
-        current         = (final +=1)
-    end
-    return toReturn
-end
 
 
 
@@ -327,12 +362,12 @@ function xyz_to_nn_input(file_path::String)
     N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
 
     # Create the neural network input dataset and forces 
-    nn_input_dataset , all_forces = prepare_nn_data(dataset, N_atoms)
+    nn_input_dataset , all_forces, species_idx = prepare_nn_data(dataset, species, unique_species)
 
 
     # Preprocess data: normalize, split into train, validation, and test sets
     Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, all_energies, all_forces)
     
     # Return the processed datasets and normalization parameters
-    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, species, all_cells)
+    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, unique_species, species_idx, all_cells)
 end

@@ -2,10 +2,10 @@ using Test
 using SymmLearn
 
 
-include("../src/MLTrain.jl")
 include("../src/Data_prep.jl")
 include("../src/Utils.jl")
-
+include("../src/Train.jl")
+include("../src/Model.jl")
 
 
 
@@ -43,16 +43,21 @@ include("../src/Utils.jl")
 
 
 
-    x_batch = Train[1][1:3, :]
-    y_batch = Train[2][1:3]
+    x = Train[1][1:3, :]
+    y = Train[2][1:3]
+    e = extract_energies(y)
+    f = extract_forces(y)
 
-    model_time = @elapsed batch_output = model(x_batch)
+    model_time = @elapsed batch_output = model(x)
     println("Time for computing the model output for a batch: ", model_time, " seconds")
-    @test size(batch_output) == (3 ,)
+    @test size(batch_output) == (1 , 3)
 
-    loss_time = @elapsed sample_loss = loss_function(model, x_batch, y_batch)
+    f_loss_time = @elapsed fconst = force_loss(model , x , f)
+    println("Time for computing the force loss of a batch: ", f_loss_time, " seconds")
+
+    loss_time = @elapsed sample_loss = loss(model, x, e , fconst)
     println("Time for computing the loss of a a batch: ", loss_time, " seconds")
-    @test sample_loss != 0f0 
+    @test mean(sample_loss) > 0f0 
 
 
 
@@ -69,7 +74,7 @@ include("../src/Utils.jl")
         Train[2], 
         Val[1],
         Val[2],
-        loss_function;
+        loss;
          initial_lr=0.1,epochs=1, batch_size=1, verbose=false
     )
     println("Time for train_model!: ", time_train, " seconds")

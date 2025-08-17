@@ -189,12 +189,6 @@ end
 
 
 
-
-
-
-
-
-
 """
     build_branch(atom::String, G1_number::Int, R_cutoff::Float32) -> Chain
 
@@ -211,8 +205,8 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
     ion_charge = element_to_charge[Atom_name]
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
-        BatchNorm(G1_number),
-        Dense(G1_number, 8, tanh), 
+        Dense(G1_number, 16, tanh), 
+        Dense(16 , 8 , tanh),
         Dense(8, 4, tanh),
         Dense(4, 2, tanh),
         Dense(2, 1)
@@ -220,6 +214,58 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
 end
 
 
+# --- Layer that sums atomic contributions ---
+struct SumAtoms end
+function (::SumAtoms)(X::AbstractMatrix)
+    nb, na = size(X)
+    out = similar(X, eltype(X), nb)
+    @inbounds for b in 1:nb
+        acc = zero(eltype(X))
+        @simd for a in 1:na
+            acc += X[b, a]
+        end
+        out[b] = acc
+    end
+    return out
+end
+
+# --- Atom branch (selects distances for one atom and applies its subnetwork) ---
+struct AtomBranch{M}
+    idx::Int
+    model::M
+end
+function (ab::AtomBranch)(x)
+    # x: (n_batch, N, N-1); select distances of atom idx → (n_batch, N-1)
+    Xi = @view x[:, ab.idx, :]
+    return ab.model(Xi)  # should return (n_batch,) or (n_batch, 1)
+end
+
+# --- Parallel layer that applies all branches and stacks outputs ---
+struct ParallelAtoms{B<:Tuple}
+    branches::B
+end
+function (p::ParallelAtoms)(x)
+    nb = size(x, 1)
+    na = length(p.branches)
+
+    # Evaluate first branch and allocate output
+    y1 = vec(p.branches[1](x))   # ensure (nb,)
+    out = similar(y1, nb, na)    # (nb, na)
+    @inbounds @simd for b in 1:nb
+        out[b, 1] = y1[b]
+    end
+
+    # Remaining branches
+    @inbounds for a in 2:na
+        ya = vec(p.branches[a](x))
+        @simd for b in 1:nb
+            out[b, a] = ya[b]
+        end
+    end
+    return out
+end
+
+# --- Build the full model ---
 """
     build_model(
         species_order::Vector{String},
@@ -228,55 +274,27 @@ end
     ) -> Chain
 
 Builds a Flux model that predicts the total energy of a molecular structure by summing
-atom-wise contributions, **sharing subnetwork weights across atoms of the same species**.
+atom-wise contributions, sharing subnetwork weights across atoms of the same species.
 
 ### Workflow
-1. Computes the full pairwise distance matrix (excluding self-distances) once per batch.
-2. Splits the distance matrix rows so that each branch processes one atom.
-3. Each branch applies a species-specific subnetwork to its distances.
-4. All atomic contributions are summed to obtain the total energy.
+1. Computes the full pairwise distance matrix (excluding self-distances).
+2. Each atom branch selects its row from the distance matrix.
+3. A species-specific subnetwork processes these distances.
+4. Atomic contributions are summed into the total energy.
 
 ### Arguments
-- `species_order::Vector{String}`: List of atom species in the fixed order of the input coordinates.
-- `G1_number::Int`: Number of G1 radial symmetry functions in the input layer.
-- `R_cutoff::Float32`: Cutoff radius for neighbor interactions in `G1Layer`.
+- `species_order::Vector{String}`: Ordered list of atom species.
+- `G1_number::Int`: Number of G1 radial symmetry functions.
+- `R_cutoff::Float32`: Cutoff radius for neighbor interactions.
 
 ### Returns
-- `Chain`: A Flux model with structure:
-    ```
-    Chain(
-        distance_matrix_layer_no_self,
-        Parallel(vcat, branches...),
-        sum_layer
-    )
-    ```
-"""
-
-# Struttura per sommare lungo la prima dimensione
-struct SumLayer
-    dims::Int
-end
-(s::SumLayer)(x) = sum(x; dims=s.dims)
-
-# Branch con tipo concreto
-struct AtomBranch{M}
-    idx::Int
-    model::M
-end
-(ab::AtomBranch)(x) = ab.model(x[:, ab.idx, :])
-
-"""
-    build_model(species_order, G1_number, R_cutoff)
-
-Costruisce un modello Chain statico e type-stable,
-compatibile con Enzyme.
+- `Chain`: Flux model compatible with Enzyme autodiff.
 """
 function build_model(
     species_order::Vector{String},
     G1_number::Int,
     R_cutoff::Float32
 )
-    # Costruisci branches come NTuple di tipo concreto
     branches = ntuple(i -> AtomBranch(
             i,
             build_branch(species_order[i], G1_number, R_cutoff)
@@ -284,12 +302,13 @@ function build_model(
         length(species_order)
     )
 
-    parallel_layer = Parallel(vcat, branches...)
-
     return Chain(
-        distance_matrix_layer,
-        parallel_layer,
-        SumLayer(1)  # somma lungo dim=1
+        distance_matrix_layer,   # (n_batch, N, N-1)
+        ParallelAtoms(branches), # (n_batch, N_atoms)
+        SumAtoms()               # (n_batch,)
     )
 end
+
+
+
 

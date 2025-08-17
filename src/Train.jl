@@ -35,6 +35,7 @@ Compute the squared error between predicted energy and reference energy.
 - Squared error as an array.
 """
 function energy_loss(model, x, y)
+
     return (model(x) .- y).^2
 end
 
@@ -71,7 +72,8 @@ Compute mean squared error (MSE) between predicted and reference forces for a si
 """
 function force_loss(model, x::AbstractVector, f)
     predicted_forces = calculate_force(model, x)
-    return mean((predicted_forces .- f').^2)
+
+    return mean((predicted_forces .- f) .^2)
 end
 
 """
@@ -111,37 +113,18 @@ Compute the combined energy + force loss for a single input.
 # Returns
 - `Float32`: Total loss combining energy and force term.
 """
-function loss(model, x, y, fconst; λ::Float32=0.5f0)
-    return sum(energy_loss(model, x, y) .+ λ .* fconst)
+function loss(model, x, y, fconst; λ::Float32=0.5f0)    
+    e_loss = energy_loss(model , x , y)
+
+    @assert size(e_loss) == size(fconst)
+
+    return sum(e_loss .+ λ .* fconst)
 end
 
 
-"""
-    loss_function_no_forces(model, data, energies)
-
-check documentation for loss_function, this is the same but without using the forces
 
 
-"""
 
-
-# Loss per singolo campione (1D input)
-function loss_function_no_forces(model, data::AbstractVector, target)
-
-    energies = target.energy
-    pred = model(data)[1]
-    return abs2(pred - energies) |> mean
-
-end
-
-# Loss per batch (2D input)
-function loss_function_no_forces(model, data::AbstractMatrix, target)
-
-    energies = Float32[s.energy for s in target]
-    preds = model(data)'
-    loss = abs2.(preds .- energies)
-    return mean(loss)
-end
 
 
 
@@ -215,8 +198,8 @@ function train_model!(
   x_val::Any,
   y_val,
   loss_function::Function;
-  initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
-  epochs=3000, batch_size=32, verbose=true
+  forces = true , initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
+  epochs=3000, batch_size=32, verbose=false
 )
 
   opt = Flux.setup(Adam(initial_lr), model)
@@ -243,27 +226,36 @@ function train_model!(
       y_batch = y_train[i:end_idx]
 
       e = extract_energies(y_batch)
-      f = extract_forces(y_batch)
-
-      fconst = force_loss(model , x_batch , f)
-
-      grads = Enzyme.gradient(Reverse, (m) -> loss(m, x_batch , e , fconst), model)
-      
-      if epoch == epochs 
-         println("il gradiente è ", grads[1])
+      if forces == true
+        f = extract_forces(y_batch)
+        fconst = force_loss(model , x_batch , f)
+      else
+        fconst = 0f0
       end
+
+      grads = Enzyme.gradient(Reverse, (m , x , ee , ff) -> loss(m, x , ee , ff), model , x_batch , Const(e) , Const(fconst))
+      
       Flux.update!(opt, model, grads[1])
 
       
     end
 
     # Loss evaluation
-    loss_train[epoch] = loss_function(model, x_train , y_train)
-    loss_val[epoch] = loss_function(model, x_val , y_val)
+    e_t = extract_energies(y_train)
+    e_v = extract_energies(y_val)
+    if forces == true
+        f_t = extract_forces(y_train)
+        f_e = extract_forces(y_val)
+        fconst_t = force_loss(model , x_train , f_t)
+        fconst_v = force_loss(model , x_val , f_e)
+      else
+        fconst_t = 0f0
+        fconst_v = 0f0
+      end
+    
+    loss_train[epoch] = loss(model, x_train , e_t , fconst_t)
+    loss_val[epoch] = loss(model, x_val , e_v , fconst_v)
 
-    if verbose && epoch%10 == 0
-      println("Epoch $(lpad(epoch,4)) | Train Loss: $(round(loss_train[epoch], digits=6)) | Val Loss: $(round(loss_val[epoch], digits=6))")
-    end
 
 
     # Model checkpoint
@@ -289,8 +281,8 @@ function train_model!(
   end
 
   if verbose
-    println("Final Train Loss: $(loss_function(model, x_train, y_train))")
-    println("Final Val Loss:   $(loss_function(model, x_val, y_val))")
+    println("Final Train Loss: ", loss_train[epoch])
+    println("Final Val Loss: " , loss_val[epoch])
     println("Best Model Found at Epoch $best_epoch with Val Loss: $best_loss")
   end
 

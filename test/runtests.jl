@@ -50,7 +50,7 @@ include("../src/Model.jl")
 
     model_time = @elapsed batch_output = model(x)
     println("Time for computing the model output for a batch: ", model_time, " seconds")
-    @test size(batch_output) == (1 , 3)
+    @test size(batch_output) == (3 ,)
 
     f_loss_time = @elapsed fconst = force_loss(model , x , f)
     println("Time for computing the force loss of a batch: ", f_loss_time, " seconds")
@@ -75,7 +75,7 @@ include("../src/Model.jl")
         Val[1],
         Val[2],
         loss;
-         initial_lr=0.1,epochs=1, batch_size=1, verbose=false
+         initial_lr=0.1 , epochs=1 , batch_size=1
     )
     println("Time for train_model!: ", time_train, " seconds")
 

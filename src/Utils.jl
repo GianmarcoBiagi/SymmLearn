@@ -283,7 +283,7 @@ Return the forces of a single `Sample`.
 - `forces::AbstractVector`: the forces stored in the sample.
 """
 function extract_forces(x::Sample)
-    return x.forces
+    return x.forces'
 end
 
 
@@ -307,7 +307,7 @@ function extract_energies(X::Vector{Sample})
         energies_batch[i] = X[i].energy[1]
     end
 
-    return energies_batch'
+    return energies_batch
 end
 
 

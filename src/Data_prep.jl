@@ -1,5 +1,7 @@
 using ExtXYZ
 
+
+
 """
     extract_data(path::String)
 
@@ -171,11 +173,12 @@ A tuple containing:
     - `.forces`: normalized flattened force vector (`Vector{Float32}`, length `3 * n_atoms`)
 """
 
-
 struct Sample
     energy::Float32
-    forces::Array{Float32 , 2}  
+    forces::Array{Float32,2}
+    
 end
+
 
 
 function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::Vector{Float64})

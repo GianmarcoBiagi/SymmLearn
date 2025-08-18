@@ -5,23 +5,6 @@ using ProgressMeter
 
 
 """
-    f_out(model, x::AbstractVector) -> Float32
-
-Compute the scalar output (first component) of the model for a single input.
-
-# Arguments
-- `model::Function`: A callable model (e.g. `Flux.Chain`) that maps input structures to outputs.
-- `x::AbstractVector`: A vector representing a single input structure.
-
-# Returns
-- `Float32`: The scalar prediction of the model for this input.
-"""
-function f_out(model, x::AbstractVector)
-    # Extract first component as scalar output
-    return model(x)[1]
-end
-
-"""
     energy_loss(model, x, y) -> AbstractArray
 
 Compute the squared error between predicted energy and reference energy.
@@ -120,8 +103,8 @@ Compute the combined energy + force loss for a single input.
 - `Float32`: Total loss combining energy and force term.
 """
 function loss(models, x, y, fconst; λ::Float32=0.5f0)    
+  
     e_loss = energy_loss( models , x , y)
-   
 
     return sum(e_loss .+ λ .* fconst)
 end
@@ -203,106 +186,128 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 
 function train_model!(
   model,
-  x_train::Any,
-  y_train,
-  x_val::Any,
-  y_val,
-  loss_function::Function;
-  forces = true , initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
+  Train,
+  Val,
+  loss::Function;
+  forces = true,
+  initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
   epochs=3000, batch_size=32, verbose=false
 )
 
+  x_train = Train[1][:,:]
+  y_train = Train[2]
+  x_val = Val[1][: , :]
+  y_val = Val[2]
+
+  # Ottimizzatore
   opt = Flux.setup(Adam(initial_lr), model)
-
-
   current_lr = initial_lr
-  best_model = deepcopy(model)
+
+  # Per salvare il best model in modo leggero
+  θ, re = Flux.destructure(model)
+  best_params = copy(θ)
   best_epoch = 0
   best_loss = Inf
   no_improve_count = 0
 
+  # Storico delle loss
   loss_train = zeros(Float32, epochs)
   loss_val = zeros(Float32, epochs)
 
   @showprogress for epoch in 1:epochs
-    # Shuffle data
+    # Shuffle dati senza modificare quelli originali
     idx = randperm(size(x_train, 1))
-    x_train = x_train[idx, :]
-    y_train = y_train[idx]
+    x_epoch = x_train[idx, :]
+    y_epoch = y_train[idx]
 
-    for i in 1:batch_size:size(x_train, 1)
-      end_idx = min(i + batch_size - 1, size(x_train, 1))
-      x_batch = x_train[i:end_idx, :]
-      y_batch = y_train[i:end_idx]
+    # Training per mini-batch
+    for i in 1:batch_size:size(x_epoch, 1)
+      end_idx = min(i + batch_size - 1, size(x_epoch, 1))
+      x_batch = x_epoch[i:end_idx, :]
+      y_batch = y_epoch[i:end_idx]
 
       e = extract_energies(y_batch)
 
-      if forces == true
+      if forces
         f = extract_forces(y_batch)
-        fconst = force_loss(model, x_batch , f)
+        fconst = force_loss(model, x_batch, f)
       else
         fconst = 0f0
       end
 
-      grad = Enzyme.gradient(set_runtime_activity(Reverse), (m , x , ee , ff) -> loss( m, x , ee , ff),  model , x_batch , Const(e) , Const(fconst))
+      grad = Enzyme.gradient(
+        set_runtime_activity(Reverse),
+        (m, x, ee, ff) -> loss(m, x, ee, ff),
+        model, Const(x_batch), Const(e), Const(fconst)
+      )
 
       Flux.update!(opt, model, grad[1])
-
-      
     end
 
-    # Loss evaluation
-    e_t = extract_energies(y_train)
-    e_v = extract_energies(y_val)
-    if forces == true
-        f_t = extract_forces(y_train)
-        f_e = extract_forces(y_val)
-        fconst_t = force_loss(model, x_train , f_t)
-        fconst_v = force_loss(model, x_val , f_e)
-      else
-        fconst_t = 0f0
-        fconst_v = 0f0
-      end
-    
-    loss_train[epoch] = loss(model, x_train , e_t , fconst_t)
-    loss_val[epoch] = loss( model, x_val , e_v , fconst_v)
-
-
-
-    # Model checkpoint
-    if loss_val[epoch] < best_loss * 0.98
-        best_loss = loss_val[epoch]
-        best_epoch = epoch
-        best_model = deepcopy(model)
-        no_improve_count = 0
+    # === Loss evaluation ===
+    # Per training uso un batch casuale, non tutto il dataset
+    idx_sample = rand(1:size(x_train, 1), min(1024, size(x_train, 1)))
+    e_t = extract_energies(y_train[idx_sample])
+    if forces
+      f_t = extract_forces(y_train[idx_sample])
+      fconst_t = force_loss(model, x_train[idx_sample, :], f_t)
     else
-        no_improve_count += 1
+      fconst_t = 0f0
+    end
+    loss_train[epoch] = loss(model, x_train[idx_sample, :], e_t, fconst_t)
+
+    # Validazione su tutto il dataset
+    e_v = extract_energies(y_val)
+    if forces
+      f_e = extract_forces(y_val)
+      fconst_v = force_loss(model, x_val, f_e)
+    else
+      fconst_v = 0f0
+    end
+    loss_val[epoch] = loss(model, x_val, e_v, fconst_v)
+
+    # === Checkpoint migliore modello ===
+    if loss_val[epoch] < best_loss
+      best_loss = loss_val[epoch]
+      best_epoch = epoch
+      θ, _ = Flux.destructure(model)
+      best_params .= θ   # salva solo i pesi
+      no_improve_count = 0
+    else
+      no_improve_count += 1
     end
 
-    # Learning rate decay
+    # === Learning rate decay ===
     if no_improve_count >= patience
-        new_lr = max(current_lr * decay_factor, min_lr)
-        opt = Flux.setup(Adam(new_lr), model)
-        current_lr = new_lr
-        no_improve_count = 0
-        if verbose
-            println("Reducing learning rate to $new_lr at epoch $epoch")
+      new_lr = max(current_lr * decay_factor, min_lr)
+      current_lr = new_lr
+      # aggiorna direttamente il campo eta nell'ottimizzatore Adam
+      for st in opt
+        if hasproperty(st, :eta)
+          st.eta = new_lr
         end
-        # Early stopping check
-        if current_lr <= min_lr
-            if verbose
-                println("Early stopping at epoch $epoch: learning rate reached min_lr")
-            end
-            break
-        end
+      end
+      no_improve_count = 0
+      if verbose
+        println("Reducing learning rate to $new_lr at epoch $epoch")
+      end
+      if current_lr <= min_lr
+        println("Early stopping at epoch $epoch: learning rate reached min_lr")
+        break
+      end
     end
-end
+  end
+
+  # Ricostruisci il best model dai pesi salvati
+  best_model = re(best_params)
 
   if verbose
-    println("Final Train Loss: ", loss_train[epoch])
-    println("Final Val Loss: " , loss_val[epoch])
     println("Best Model Found at Epoch $best_epoch with Val Loss: $best_loss")
   end
 
   return model, best_model, loss_train, loss_val
 end
+
+
+
+

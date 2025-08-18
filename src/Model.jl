@@ -105,31 +105,33 @@ output = layer(x)                    # Output shape: (5, 3)
 
 
 function (layer::G1Layer)(x::AbstractMatrix{Float32})
-    # x: (n_batch, n_neighbors)
-
     n_batch, n_neighbors = size(x)
-    n_features = length(layer.W_eta)
+    n_features = size(layer.W_eta, 1)
 
-    # Riscalare i pesi per broadcasting
-    W_eta_exp = reshape(layer.W_eta, n_features, 1, 1)   # (features, 1, 1)
-    W_Fs_exp  = reshape(layer.W_Fs,  n_features, 1, 1)   # (features, 1, 1)
-
-    # Espandere input per broadcasting
-    x_exp = reshape(x, 1, n_batch, n_neighbors)          # (1, batch, neighbors)
-
-    # Calcolare cutoff e contributi
-    fc_x = fc.(x_exp, layer.cutoff)                      # (1, batch, neighbors)
-    diff_sq = (x_exp .- W_Fs_exp).^2                     # (features, batch, neighbors)
-    exp_term = exp.(-diff_sq .* W_eta_exp)               # (features, batch, neighbors)
-    contribution = layer.charge .* fc_x .* exp_term      # (features, batch, neighbors)
-
-    # Sommare su tutti i vicini
-    sum_neighbors = sum(contribution, dims=3)           # (features, batch, 1)
-
-    # Rimuovere dimensione singleton e restituire (features, n_batch)
-
-    return dropdims(sum_neighbors, dims=3)
+    # Output preallocato
+    output = zeros(Float32, n_features, n_batch)
+    
+    # Loop esplicito sui batch e sui features
+    for b in 1:n_batch
+        for f in 1:n_features
+            acc = 0.0f0
+            W_eta_f = layer.W_eta[f]
+            W_Fs_f  = layer.W_Fs[f]
+            
+            for n in 1:n_neighbors
+                r = x[b, n]
+                fc_r = fc(r, layer.cutoff)
+                diff = r - W_Fs_f
+                acc +=  layer.charge * fc_r * exp(-diff * diff * W_eta_f)
+            end
+            
+            output[f, b] = acc
+        end
+    end
+    
+    return output
 end
+
 
 
 
@@ -150,37 +152,34 @@ Compute pairwise distances between atoms for each batch in a matrix of batches.
 """
 function distance_matrix_layer(input::Matrix{Vector{AtomInput}})
     ϵ = Float32(1e-7)
-    
-    batches , _ = size(input)
-    N_atoms = size(input[1])[1]
+    batches, _ = size(input)
+    N_atoms = length(input[1])  # numero di atomi per batch
 
-    output = Matrix{G1Input}(undef, (batches , N_atoms ))
+    output = Matrix{G1Input}(undef, batches, N_atoms)
 
-
-    for I in 1:batches
+    @inbounds for I in 1:batches
         batch = input[I]
-        N = length(batch)
-        out_batch = Vector{G1Input}(undef, N)
+        out_batch = Vector{G1Input}(undef, N_atoms)
 
-        for i in 1:N
+        for i in 1:N_atoms
             xi, yi, zi = batch[i].coord[1:3]
-            distances = Matrix{Float32}(undef, (1 , N-1))
+            distances = Matrix{Float32}(undef, 1, N_atoms - 1)  # <-- qui serve Matrix
             idx = 1
 
-            for j in 1:N
+            @inbounds for j in 1:N_atoms
                 if j == i
                     continue
                 end
                 xj, yj, zj = batch[j].coord[1:3]
                 dx, dy, dz = xj - xi, yj - yi, zj - zi
-                distances[1 , idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+                distances[1, idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
                 idx += 1
             end
 
             out_batch[i] = G1Input(batch[i].species, distances)
         end
 
-        output[I , :] = out_batch
+        output[I, :] = out_batch
     end
 
     return output
@@ -188,40 +187,34 @@ end
 
 
 
-function distance_matrix_layer(input::Vector{Vector{AtomInput}})
+
+
+function distance_matrix_layer(input::Vector{AtomInput})
     ϵ = Float32(1e-7)
+    N = length(input)
+    output = Vector{G1Input}(undef, N)
 
-    output = Vector{Vector{G1Input}}(undef, length(input))
+    for i in 1:N
+        xi, yi, zi = input[i].coord[1:3]
+        distances = Vector{Float32}(undef, N-1)
+        idx = 1
 
-
-    for (b, batch) in enumerate(input)
-        N = length(batch)
-        out_batch = Vector{G1Input}(undef, N)
-
-        for i in 1:N
-            xi, yi, zi = batch[i].coord[1:3]
-            distances = Matrix{Float32}(undef, (1 , N-1))
-            idx = 1
-
-            for j in 1:N
-                if j == i
-                    continue
-                end
-                xj, yj, zj = batch[j].coord[1:3]
-                dx, dy, dz = xj - xi, yj - yi, zj - zi
-                distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
-                idx += 1
+        @inbounds for j in 1:N
+            if j == i
+                continue
             end
-
-            # costruiamo un nuovo AtomInput con stessa species ma features = distanze
-            out_batch[i] = G1Input(batch[i].species, distances)
+            xj, yj, zj = input[j].coord[1:3]
+            dx, dy, dz = xj - xi, yj - yi, zj - zi
+            distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+            idx += 1
         end
 
-        output[b] = out_batch
+        output[i] = G1Input(input[i].species, distances)
     end
 
     return output
 end
+
 
 
 
@@ -238,14 +231,25 @@ The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
 
 
 
-function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
+function build_branch_1(Atom_name::String, G1_number::Int, R_cutoff::Float32)
     ion_charge = element_to_charge[Atom_name]
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
-        Dense(G1_number, 8, tanh), 
+        Dense(G1_number, 4,tanh),     
+        Dense(4, 3,tanh),  
+        Dense(3,3,tanh),
+        Dense(3, 1) 
+    )
+end
+
+function build_branch_2(Atom_name::String, G1_number::Int, R_cutoff::Float32)
+    ion_charge = element_to_charge[Atom_name]
+    return Chain(
+        G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
+        Dense(G1_number, 16, tanh),
+        Dense(16, 8, tanh),
         Dense(8, 4, tanh),
-        Dense(4, 2, tanh),
-        Dense(2, 1)
+        Dense(4, 1)
     )
 end
 
@@ -268,13 +272,17 @@ to the correct model based on its numeric index.
 - `species_models::Vector{Chain}`: Array of models, ready for Enzyme differentiation.
 """
 function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
-                              G1_number::Int, R_cutoff::Float32)
+                              G1_number::Int, R_cutoff::Float32 ; depth=2::Int)
     n_species = length(unique_species)
     species_models = Vector{Chain}(undef, n_species)
     
     for spec in unique_species
         idx = species_idx[spec]
-        species_models[idx] = build_branch(spec, G1_number, R_cutoff)
+        if depth == 2
+            species_models[idx] = build_branch_2(spec, G1_number, R_cutoff)
+        elseif depth == 1
+            species_models[idx] = build_branch_1(spec, G1_number, R_cutoff)
+        end
     end
     
     return species_models
@@ -294,53 +302,51 @@ Only the numerical `features` are passed to the model, so this is compatible wit
 # Returns
 - `outputs::Vector{Float32}`: Output of the correct model for each atom.
 """
-function dispatch(atoms::Vector{Vector{AtomInput}}, species_models::Vector{Chain})
-    n_batches = size(atoms[1])[1]
-    n_atoms = size(atoms[1,1])[1]
 
-    outputs = Vector{Float32}(undef, n_atoms)
-
-
-    distances = distance_matrix_layer(atoms)
-
-
-    @inbounds for i in 1:n_atoms
-        distance = distances[1][i]
-        model = species_models[distance.species]
-        outputs[i] = model(distance.dist)[1]  # assuming model outputs a 1-element vector
+function dispatch(atoms, species_models)
+    # Normalize input to a matrix: (batches x n_atoms)
+    if isa(atoms, Vector{Vector{AtomInput}})
+        atoms = reshape(atoms, 1, :)
+        single_batch = true
+    else
+        single_batch = false
     end
 
-    outputs = sum(outputs)
+    n_batches = size(atoms, 1)
+    n_atoms = length(atoms[1])
 
-    return outputs
-end
+    # Preallocate outputs
+    outputs = Array{Float32}(undef, n_batches, n_atoms)
 
-function dispatch(atoms::Matrix{Vector{AtomInput}}, species_models::Vector{Chain})
-    n_batches = size(atoms)[1]
-    n_atoms = size(atoms[1,1])[1]
-
-
-    
-    outputs = Matrix{Float32}(undef, (n_batches , n_atoms))
-
-
-    distances = distance_matrix_layer(atoms)
-
-
+    # Compute distances once
+    distances = distance_matrix_layer(atoms)  # returns Matrix{G1Input} (n_batches, n_atoms)
 
     @inbounds for i in 1:n_atoms
-        distance = distances[: , i]
+        # All batches for atom i
+        distance_col = distances[:, i]
 
-        model = species_models[distance[1].species]
-        
-        batch = vcat([d.dist for d in distance]...)
+        # Determine species (assume same across batches)
+        model = species_models[distance_col[1].species]
 
-        outputs[: , i] = model(batch) # assuming model outputs a 1-element vector
+        # Preallocate buffer for model input
+        n_neighbors = length(distance_col[1].dist)
+        batch_input = Array{Float32}(undef, n_batches, n_neighbors)
+
+        # Fill buffer without dynamic concatenation
+        for b in 1:n_batches
+            batch_input[b, :] = distance_col[b].dist
+        end
+
+        # Forward pass
+        outputs[:, i] = vec(model(batch_input))
 
     end
 
-    final_outputs = sum(outputs , dims = 2)
+    # Sum over atoms
+    final_outputs = sum(outputs, dims=2)
 
-    return final_outputs
+    return single_batch ? final_outputs[1] : final_outputs
 end
+
+
 

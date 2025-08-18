@@ -67,10 +67,8 @@ include("../src/Model.jl")
     
     time_train = @elapsed final_model,trained_model,train_loss,val_loss = train_model!(
         species_models,
-        Train[1], 
-        Train[2], 
-        Val[1],
-        Val[2],
+        Train,
+        Val,
         loss;
          initial_lr=0.1 , epochs=1 , batch_size=3
     )

@@ -15,6 +15,8 @@ struct AtomInput{T<:AbstractVector}
 end
 
 Base.size(ai::AtomInput) = size(ai.coord)
+Base.length(ai::AtomInput) = length(ai.coord)
+Base.iterate(ai::AtomInput) = iterate(ai.coord)
 
 function Base.show(io::IO, atom::AtomInput)
     coords_str = join(atom.coord, ", ")
@@ -36,6 +38,8 @@ struct G1Input{T<:AbstractMatrix}
 end
 
 Base.size(ai::G1Input) = size(ai.dist)
+Base.length(ai::G1Input) = length(ai.dist)
+Base.iterate(ai::G1Input) = iterate(ai.dist)
 
 function Base.show(io::IO, obj::G1Input)
  
@@ -261,7 +265,7 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
 
 
     ##### --- Return --- #####
-    return (x_train, y_train), (x_val, y_val), (x_test, y_test), e_mean, e_std, forces_mean, forces_std
+    return x_train[: , :], y_train, x_val[: , :], y_val, x_test[: , :], y_test, (e_mean, e_std, forces_mean, forces_std)
 end
 
 
@@ -366,8 +370,8 @@ function xyz_to_nn_input(file_path::String)
 
 
     # Preprocess data: normalize, split into train, validation, and test sets
-    Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std = data_preprocess(nn_input_dataset, all_energies, all_forces)
+    x_train , y_train , x_val , y_val, x_test , y_test, stat = data_preprocess(nn_input_dataset, all_energies, all_forces)
     
     # Return the processed datasets and normalization parameters
-    return (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, unique_species, species_idx, all_cells)
+    return (x_train , y_train , x_val , y_val, x_test , y_test, stat, unique_species, species_idx, all_cells)
 end

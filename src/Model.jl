@@ -106,30 +106,26 @@ output = layer(x)                    # Output shape: (5, 3)
 
 function (layer::G1Layer)(x::AbstractMatrix{Float32})
     # x: (n_batch, n_neighbors)
-
     n_batch, n_neighbors = size(x)
     n_features = length(layer.W_eta)
 
-    # Riscalare i pesi per broadcasting
-    W_eta_exp = reshape(layer.W_eta, n_features, 1, 1)   # (features, 1, 1)
-    W_Fs_exp  = reshape(layer.W_Fs,  n_features, 1, 1)   # (features, 1, 1)
+    output = zeros(Float32, n_features, n_batch)
 
-    # Espandere input per broadcasting
-    x_exp = reshape(x, 1, n_batch, n_neighbors)          # (1, batch, neighbors)
+    @inbounds for b in 1:n_batch
+        for f in 1:n_features
+            # Calcola tutti i contributi dei vicini in-place senza allocazioni temporanee
+            s = 0f0
+            for n in 1:n_neighbors
+                dx = x[b, n] - layer.W_Fs[f]
+                s += fc(x[b, n], layer.cutoff) * exp(-layer.W_eta[f] * dx * dx)
+            end
+            output[f, b] = layer.charge * s
+        end
+    end
 
-    # Calcolare cutoff e contributi
-    fc_x = fc.(x_exp, layer.cutoff)                      # (1, batch, neighbors)
-    diff_sq = (x_exp .- W_Fs_exp).^2                     # (features, batch, neighbors)
-    exp_term = exp.(-diff_sq .* W_eta_exp)               # (features, batch, neighbors)
-    contribution = layer.charge .* fc_x .* exp_term      # (features, batch, neighbors)
-
-    # Sommare su tutti i vicini
-    sum_neighbors = sum(contribution, dims=3)           # (features, batch, 1)
-
-    # Rimuovere dimensione singleton e restituire (features, n_batch)
-
-    return dropdims(sum_neighbors, dims=3)
+    return output
 end
+
 
 
 
@@ -238,15 +234,29 @@ The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
 
 
 
-function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32)
+function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int)
     ion_charge = element_to_charge[Atom_name]
+    if depth == 2
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
-        Dense(G1_number, 8, tanh), 
-        Dense(8, 4, tanh),
-        Dense(4, 2, tanh),
-        Dense(2, 1)
+        Dense(G1_number, 15, tanh), 
+        Dense(15, 10, tanh),
+        Dense(10, 5, tanh),
+        Dense(5, 1)
     )
+    elseif depth == 1
+
+    return Chain(
+        G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
+        Dense(G1_number , 4 , tanh),
+        Dense(4, 3,tanh),  
+        Dense(3,3,tanh),
+        Dense(3, 1)   
+    )
+
+
+
+    end
 end
 
 
@@ -268,13 +278,13 @@ to the correct model based on its numeric index.
 - `species_models::Vector{Chain}`: Array of models, ready for Enzyme differentiation.
 """
 function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
-                              G1_number::Int, R_cutoff::Float32)
+                              G1_number::Int, R_cutoff::Float32 ; depth = 2::Int)
     n_species = length(unique_species)
     species_models = Vector{Chain}(undef, n_species)
     
     for spec in unique_species
         idx = species_idx[spec]
-        species_models[idx] = build_branch(spec, G1_number, R_cutoff)
+        species_models[idx] = build_branch(spec, G1_number, R_cutoff , depth)
     end
     
     return species_models
@@ -295,6 +305,9 @@ Only the numerical `features` are passed to the model, so this is compatible wit
 - `outputs::Vector{Float32}`: Output of the correct model for each atom.
 """
 function dispatch(atoms::Vector{Vector{AtomInput}}, species_models::Vector{Chain})
+
+    
+
     n_batches = size(atoms[1])[1]
     n_atoms = size(atoms[1,1])[1]
 

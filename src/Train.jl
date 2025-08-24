@@ -126,6 +126,87 @@ function loss(models, x, y, fconst; λ::Float32=0.5f0)
     return sum(e_loss .+ λ .* fconst)
 end
 
+"""
+    maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
+
+Check if the current validation loss is better than the best recorded loss (by a factor `tol`).
+If yes, update `best_model`, `best_loss`, `best_epoch`, and reset `no_improve_count`.
+
+# Arguments
+- `model`: the current model.
+- `loss_val`: validation loss at the current epoch.
+- `epoch`: current epoch number.
+- `best_model`: current best model (deepcopy will be done if improved).
+- `best_loss`: best validation loss recorded so far.
+- `best_epoch`: epoch number of the best model.
+- `no_improve_count`: counter for epochs without improvement.
+- `tol`: improvement tolerance factor (default: `0.98`).
+
+# Returns
+Updated `(best_model, best_loss, best_epoch, no_improve_count)`.
+"""
+function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
+    if loss_val < best_loss * tol
+        return deepcopy(model), loss_val, epoch, 0
+    else
+        return best_model, best_loss, best_epoch, no_improve_count + 1
+    end
+end
+
+
+"""
+    maybe_decay_lr!(opt::Flux.Optimise.Adam, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
+
+Decay the learning rate of the Adam optimizer in place after `patience` epochs without improvement.
+Preserves optimizer state (momenta).
+
+# Arguments
+- `opt`: Adam optimizer (with internal state).
+- `current_lr`: current learning rate (Float).
+- `no_improve_count`: epochs without improvement.
+- `patience`: patience threshold before decaying LR.
+- `decay_factor`: multiplicative factor to reduce LR.
+- `min_lr`: minimum allowed learning rate.
+- `epoch`: current epoch.
+- `verbose`: print info if true.
+
+# Returns
+Updated `(opt, current_lr, no_improve_count, stop_training::Bool)`.
+"""
+function maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
+    if no_improve_count >= patience
+        new_lr = max(current_lr * decay_factor, min_lr)
+        update_lr!(opt, new_lr)
+        if verbose
+            println("Reducing learning rate to $new_lr at epoch $epoch")
+        end
+        stop_training = new_lr <= min_lr
+        return opt, new_lr, 0, stop_training
+    else
+        return opt, current_lr, no_improve_count, false
+    end
+end
+
+
+"""
+    update_lr!(opt, new_lr)
+
+Update learning rate `eta` for all Adam leaves inside the optimizer state tree.
+"""
+function update_lr!(opt, new_lr)
+    for leaf in opt
+        for (k, v) in pairs(leaf)
+            if v isa Optimisers.Leaf && v.opt isa Flux.Optimise.Adam
+                v.opt.eta = new_lr
+            end
+        end
+    end
+    return opt
+end
+
+
+
+
 
 
 """
@@ -200,109 +281,129 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 
 
 
-
 function train_model!(
-  model,
-  x_train::Any,
-  y_train,
-  x_val::Any,
-  y_val,
-  loss_function::Function;
-  forces = true , initial_lr=0.1, min_lr=1e-5, decay_factor=0.5, patience=25,
-  epochs=3000, batch_size=32, verbose=false
+    model,
+    x_train,
+    y_train,
+    x_val,
+    y_val;
+    forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
+    epochs=1000, batch_size=32, verbose=false
 )
 
-  opt = Flux.setup(Adam(initial_lr), model)
+    opt = Flux.setup(Adam(initial_lr), model)
+    N = size(x_train , 1)
 
 
-  current_lr = initial_lr
-  best_model = deepcopy(model)
-  best_epoch = 0
-  best_loss = Inf
-  no_improve_count = 0
-
-  loss_train = zeros(Float32, epochs)
-  loss_val = zeros(Float32, epochs)
-
-  @showprogress for epoch in 1:epochs
-    # Shuffle data
-    idx = randperm(size(x_train, 1))
-    x_train = x_train[idx, :]
-    y_train = y_train[idx]
-
-    for i in 1:batch_size:size(x_train, 1)
-      end_idx = min(i + batch_size - 1, size(x_train, 1))
-      x_batch = x_train[i:end_idx, :]
-      y_batch = y_train[i:end_idx]
-
-      e = extract_energies(y_batch)
-
-      if forces == true
-        f = extract_forces(y_batch)
-        fconst = force_loss(model, x_batch , f)
-      else
-        fconst = 0f0
-      end
-
-      grad = Enzyme.gradient(set_runtime_activity(Reverse), (m , x , ee , ff) -> loss( m, x , ee , ff),  model , x_batch , Const(e) , Const(fconst))
-
-      Flux.update!(opt, model, grad[1])
-
-      
-    end
-
-    # Loss evaluation
-    e_t = extract_energies(y_train)
+    # Precompute validation targets
     e_v = extract_energies(y_val)
-    if forces == true
-        f_t = extract_forces(y_train)
-        f_e = extract_forces(y_val)
-        fconst_t = force_loss(model, x_train , f_t)
-        fconst_v = force_loss(model, x_val , f_e)
-      else
-        fconst_t = 0f0
-        fconst_v = 0f0
-      end
+    f_v = extract_forces(y_val)
+    e_t = extract_energies(y_train)
+    f_t = extract_forces(y_train)
+  
+
+    current_lr   = initial_lr
+    best_model   = deepcopy(model)
+    best_epoch   = 1
+    best_loss    = Inf
+    no_improve_count = 0
+ 
+
+    loss_train = zeros(Float32, epochs)
+    loss_val   = zeros(Float32, epochs)
+
+    @showprogress for epoch in 1:epochs
+      # Loop sui batch
+      for batch in batch_indices(N, batch_size)
+       
+        xb = x_train[batch, :]
+        yb = y_train[batch]
     
-    loss_train[epoch] = loss(model, x_train , e_t , fconst_t)
-    loss_val[epoch] = loss( model, x_val , e_v , fconst_v)
+
+        e = extract_energies(yb)
+        f = extract_forces(yb)
+            
+
+        fconst = forces ? force_loss(model, xb, f) : 0f0
+   
+
+        grad = Enzyme.gradient(set_runtime_activity(Reverse),
+                              (m, x, ee, ff) -> loss(m, x, ee, ff),
+                              model, Const(xb), Const(e), Const(fconst))
+ 
+
+        Flux.update!(opt, model, grad[1])
+      end
+
+      # Calcolo della loss sull’intero train e val set
+    
+      fconst_t = forces ? force_loss(model, x_train, f_t) : 0f0
+      fconst_v = forces ? force_loss(model, x_val, f_v)   : 0f0
 
 
+      loss_train[epoch] = loss(model, x_train, e_t, fconst_t)
+      loss_val[epoch]   = loss(model, x_val,   e_v, fconst_v)
 
-    # Model checkpoint
-    if loss_val[epoch] < best_loss * 0.98
-        best_loss = loss_val[epoch]
-        best_epoch = epoch
-        best_model = deepcopy(model)
-        no_improve_count = 0
-    else
-        no_improve_count += 1
-    end
+      # Gestione decay del learning rate ed early stopping
+      opt, current_lr, no_improve_count, stop_training =
+          maybe_decay_lr!(opt, current_lr, no_improve_count,
+                          patience, decay_factor, min_lr, epoch; verbose=verbose)
 
-    # Learning rate decay
-    if no_improve_count >= patience
-        new_lr = max(current_lr * decay_factor, min_lr)
-        opt = Flux.setup(Adam(new_lr), model)
-        current_lr = new_lr
-        no_improve_count = 0
-        if verbose
-            println("Reducing learning rate to $new_lr at epoch $epoch")
-        end
-        # Early stopping check
-        if current_lr <= min_lr
-            if verbose
-                println("Early stopping at epoch $epoch: learning rate reached min_lr")
-            end
-            break
-        end
-    end
-end
+      # Salvataggio del best model
+      best_model, best_loss, best_epoch, no_improve_count =
+        maybe_save_best!(model, loss_val[epoch], epoch,
+                        best_model, best_loss, best_epoch, no_improve_count)
+
+      if stop_training
+        println("Early stopping at epoch $epoch: learning rate reached min_lr")
+        break
+      end
+  end
 
   if verbose
-    println("Final Train Loss: ", loss_train[epoch])
-    println("Final Val Loss: " , loss_val[epoch])
-    println("Best Model Found at Epoch $best_epoch with Val Loss: $best_loss")
+      println("Final Train Loss: ", loss_train[best_epoch])
+      println("Final Val Loss: ", loss_val[best_epoch])
   end
 
   return model, best_model, loss_train, loss_val
+end
+
+
+
+function batch_indices(n, batchsize)
+    # Restituisce un vettore di vettori con gli indici dei batch
+    idx = collect(1:n)
+    shuffle!(idx)
+    [idx[i:min(i+batchsize-1, n)] for i in 1:batchsize:n]
+end
+
+function train_model_small!(
+    model,
+    x_train,
+    y_train;
+    forces=true, initial_lr=0.01, epochs=500, batchsize=32
+)
+
+    N = size(x_train, 1)  # numero di campioni
+    opt = Flux.setup(Adam(initial_lr), model)
+
+    @showprogress for epoch in 1:epochs
+        for batch in batch_indices(N, batchsize)
+            xb = x_train[batch , :]   # prendi subset del batch
+            yb = y_train[batch]
+
+            e = extract_energies(yb)
+            f = extract_forces(yb)
+
+            fconst = forces ? force_loss(model, xb, f) : 0f0
+
+            grad = Enzyme.gradient(set_runtime_activity(Reverse),
+                                   (m, x, ee, ff) -> loss(m, x, ee, ff),
+                                   model, Const(xb), Const(e), Const(fconst))
+
+            Flux.update!(opt, model, grad[1])
+        end
+    end
+
+    return model
 end

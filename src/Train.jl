@@ -4,22 +4,6 @@ using ProgressMeter
 
 
 
-"""
-    f_out(model, x::AbstractVector) -> Float32
-
-Compute the scalar output (first component) of the model for a single input.
-
-# Arguments
-- `model::Function`: A callable model (e.g. `Flux.Chain`) that maps input structures to outputs.
-- `x::AbstractVector`: A vector representing a single input structure.
-
-# Returns
-- `Float32`: The scalar prediction of the model for this input.
-"""
-function f_out(model, x::AbstractVector)
-    # Extract first component as scalar output
-    return model(x)[1]
-end
 
 """
     energy_loss(model, x, y) -> AbstractArray
@@ -54,11 +38,13 @@ Compute the negative gradient of the scalar model output w.r.t. input `x`, i.e.,
 function calculate_force( x::AbstractVector , model)
 
     # Enzyme gradient: returns a tuple (grad w.r.t model, grad w.r.t x)
-    grad_x , _ = Enzyme.gradient(set_runtime_activity(Reverse) , (x,s) -> dispatch(x,s),  x , Const(model))
-    forces = vcat([-g.coord for g in grad_x[1]]...) 
-    return forces
+    grad  = Enzyme.gradient(set_runtime_activity(Reverse) , (x,m) -> dispatch(x,m),  x , Const(model))
+
+    d_matrix = [g.dist for g in grad[1]]
+    return d_matrix
 
 end
+
 
 
 
@@ -76,10 +62,13 @@ Compute mean squared error (MSE) between predicted and reference forces for a si
 # Returns
 - `Float32`: MSE loss for this input.
 """
-function force_loss(model, x::AbstractVector,  f)
-    predicted_forces = calculate_force(x , model)
+function force_loss(model, x::AbstractVector,  f , f_matrix)
+    d_matrix = calculate_force(x , model)
 
-    return mean((predicted_forces .- f) .^2)
+    predicted_forces = reduce(hcat, (d_matrix[i] * f_matrix[i, :, :] for i in 1:size(d_matrix, 1)))
+
+
+    return mean((predicted_forces .- f') .^2)
 end
 
 """
@@ -95,11 +84,13 @@ Compute force losses for a batch of inputs.
 # Returns
 - `Vector{Float32}`: Force loss for each example in the batch.
 """
-function force_loss(model, X::AbstractMatrix, F::AbstractMatrix)
+function force_loss(model, X::Matrix{G1Input}, F::AbstractMatrix , F_matrix)
     # Map each example in the batch to its force loss
+ 
     losses = map(1:size(X, 1)) do i
 
-        force_loss(model, X[i , :] , F[i , :])
+      force_loss(model, X[i , :] , F[i , :] , F_matrix[i , : , : ,:])
+
     end
     return losses'
 end
@@ -119,7 +110,7 @@ Compute the combined energy + force loss for a single input.
 # Returns
 - `Float32`: Total loss combining energy and force term.
 """
-function loss(models, x, y, fconst; λ::Float32=0.5f0)    
+function loss(models, x, y, fconst; λ::Float32=10.0f0)    
     e_loss = energy_loss( models , x , y)
    
 
@@ -205,6 +196,28 @@ function update_lr!(opt, new_lr)
 end
 
 
+"""
+    batch_indices(n::Int, batchsize::Int) -> Vector{Vector{Int}}
+
+Generates shuffled mini-batch indices for a dataset.
+
+# Arguments
+- `n::Int`: Total number of samples in the dataset.
+- `batchsize::Int`: Desired size of each mini-batch.
+
+# Returns
+- `Vector{Vector{Int}}`: A vector of vectors, where each subvector contains 
+  the indices of the samples belonging to a mini-batch.  
+  The indices are shuffled before the dataset is split.
+"""
+
+
+function batch_indices(n, batchsize)
+    # Restituisce un vettore di vettori con gli indici dei batch
+    idx = collect(1:n)
+    shuffle!(idx)
+    [idx[i:min(i+batchsize-1, n)] for i in 1:batchsize:n]
+end
 
 
 
@@ -233,8 +246,8 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 - `y_val::Vector{Float32}`  
   Ground truth energies (and optionally forces) for the validation set.
 
-- `loss_function::Function`  
-  Function to compute the loss: `loss_function(model, data, targets)`.
+- `λ::Float32=10.0`  
+  Relative weight given to the force loss (default for energy is 1).
 
 - `initial_lr::Float32=0.01`  
   Initial learning rate for the `Adam` optimizer.
@@ -287,7 +300,7 @@ function train_model!(
     y_train,
     x_val,
     y_val;
-    forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
+    λ = 10.0f0 , forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
     epochs=1000, batch_size=32, verbose=false
 )
 
@@ -300,6 +313,13 @@ function train_model!(
     f_v = extract_forces(y_val)
     e_t = extract_energies(y_train)
     f_t = extract_forces(y_train)
+
+    dist_train = distance_matrix_layer(x_train)
+    dist_val = distance_matrix_layer(x_val)
+
+    d_matrix_train = distance_derivatives(x_train)
+    d_matrix_val = distance_derivatives(x_val)
+
   
 
     current_lr   = initial_lr
@@ -316,19 +336,21 @@ function train_model!(
       # Loop sui batch
       for batch in batch_indices(N, batch_size)
        
-        xb = x_train[batch, :]
+        xb = dist_train[batch, :]
         yb = y_train[batch]
+
+        x_der = d_matrix_train[batch, : , : ,:]
     
 
         e = extract_energies(yb)
         f = extract_forces(yb)
             
 
-        fconst = forces ? force_loss(model, xb, f) : 0f0
+        fconst = forces ? force_loss(model, xb, f , x_der) : 0f0
    
 
         grad = Enzyme.gradient(set_runtime_activity(Reverse),
-                              (m, x, ee, ff) -> loss(m, x, ee, ff),
+                              (m, x, ee, ff) -> loss(m, x, ee, ff ; λ),
                               model, Const(xb), Const(e), Const(fconst))
  
 
@@ -337,12 +359,12 @@ function train_model!(
 
       # Calcolo della loss sull’intero train e val set
     
-      fconst_t = forces ? force_loss(model, x_train, f_t) : 0f0
-      fconst_v = forces ? force_loss(model, x_val, f_v)   : 0f0
+      fconst_t = forces ? force_loss(model, dist_train, f_t, d_matrix_train) : 0f0
+      fconst_v = forces ? force_loss(model, dist_val, f_v, d_matrix_val)   : 0f0
 
 
-      loss_train[epoch] = loss(model, x_train, e_t, fconst_t)
-      loss_val[epoch]   = loss(model, x_val,   e_v, fconst_v)
+      loss_train[epoch] = loss(model, dist_train, e_t, fconst_t ; λ)
+      loss_val[epoch]   = loss(model, dist_val,   e_v, fconst_v ; λ)
 
       # Gestione decay del learning rate ed early stopping
       opt, current_lr, no_improve_count, stop_training =
@@ -370,40 +392,5 @@ end
 
 
 
-function batch_indices(n, batchsize)
-    # Restituisce un vettore di vettori con gli indici dei batch
-    idx = collect(1:n)
-    shuffle!(idx)
-    [idx[i:min(i+batchsize-1, n)] for i in 1:batchsize:n]
-end
 
-function train_model_small!(
-    model,
-    x_train,
-    y_train;
-    forces=true, initial_lr=0.01, epochs=500, batchsize=32
-)
 
-    N = size(x_train, 1)  # numero di campioni
-    opt = Flux.setup(Adam(initial_lr), model)
-
-    @showprogress for epoch in 1:epochs
-        for batch in batch_indices(N, batchsize)
-            xb = x_train[batch , :]   # prendi subset del batch
-            yb = y_train[batch]
-
-            e = extract_energies(yb)
-            f = extract_forces(yb)
-
-            fconst = forces ? force_loss(model, xb, f) : 0f0
-
-            grad = Enzyme.gradient(set_runtime_activity(Reverse),
-                                   (m, x, ee, ff) -> loss(m, x, ee, ff),
-                                   model, Const(xb), Const(e), Const(fconst))
-
-            Flux.update!(opt, model, grad[1])
-        end
-    end
-
-    return model
-end

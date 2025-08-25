@@ -22,13 +22,13 @@ include("../src/Model.jl")
     # Step 2: Create neural network input
     time_nn_input = @elapsed nn_input_dataset , all_forces, species_idx = prepare_nn_data(dataset, species , unique_species)
     println("Time for prepare_nn_data: ", time_nn_input, " seconds")
-    @test size(nn_input_dataset) == (5 ,)
+    @test size(nn_input_dataset) == (10 ,)
     
 
 
 
     # Step 3: Data preprocessing
-    time_preprocess = @elapsed Train, Val, _, _, _, _ = data_preprocess(nn_input_dataset, all_energies, all_forces ,split=[0.6, 0.2, 0.2])
+    time_preprocess = @elapsed x_train , y_train , x_val , y_val , _ , _ , _ = data_preprocess(nn_input_dataset, all_energies, all_forces ,split=[0.6, 0.2, 0.2])
     println("Time for data_preprocess: ", time_preprocess, " seconds")
 
 
@@ -40,19 +40,21 @@ include("../src/Model.jl")
 
 
 
-    x = Train[1][1:3, :]
-    y = Train[2][1:3]
+    x = x_train[1:3, :]
+    y = y_train[1:3]
+    dist = distance_matrix_layer(x)
+    df_matrix = distance_derivatives(x)
     e = extract_energies(y)
     f = extract_forces(y)
 
-    model_time = @elapsed batch_output = dispatch(x , species_models)
+    model_time = @elapsed batch_output = dispatch(dist , species_models)
     println("Time for computing the model output for a batch: ", model_time, " seconds")
     @test size(batch_output) == (3 , 1)
 
-    f_loss_time = @elapsed fconst = force_loss( species_models, x, f)
+    f_loss_time = @elapsed fconst = force_loss( species_models, dist, f , df_matrix)
     println("Time for computing the force loss of a batch: ", f_loss_time, " seconds")
 
-    loss_time = @elapsed sample_loss = loss(species_models, x, e , fconst)
+    loss_time = @elapsed sample_loss = loss(species_models, dist, e , fconst)
     println("Time for computing the loss of a a batch: ", loss_time, " seconds")
     @test mean(sample_loss) > 0f0 
 
@@ -67,13 +69,10 @@ include("../src/Model.jl")
     
     time_train = @elapsed final_model,trained_model,train_loss,val_loss = train_model!(
         species_models,
-        Train[1], 
-        Train[2], 
-        Val[1],
-        Val[2],
-        loss;
-         initial_lr=0.1 , epochs=1 , batch_size=3
-    )
+        x_train, y_train, 
+        x_val, y_val,
+         epochs=1 , batch_size=3)
+
     println("Time for train_model!: ", time_train, " seconds")
 
     # Check to see if parameters actually changed after the training

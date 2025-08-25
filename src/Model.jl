@@ -184,40 +184,152 @@ end
 
 
 
-function distance_matrix_layer(input::Vector{Vector{AtomInput}})
+function distance_matrix_layer(input::Vector{AtomInput})
     ϵ = Float32(1e-7)
+    
+    N_atoms = size(input, 1)
 
-    output = Vector{Vector{G1Input}}(undef, length(input))
 
+    output = Vector{G1Input}(undef, N_atoms)
 
-    for (b, batch) in enumerate(input)
-        N = length(batch)
-        out_batch = Vector{G1Input}(undef, N)
+    for i in 1:N_atoms
+        xi, yi, zi = input[i].coord[1:3]
+        distances = Matrix{Float32}(undef, (1 , N_atoms-1))
+        idx = 1
 
-        for i in 1:N
-            xi, yi, zi = batch[i].coord[1:3]
-            distances = Matrix{Float32}(undef, (1 , N-1))
-            idx = 1
-
-            for j in 1:N
-                if j == i
-                    continue
-                end
-                xj, yj, zj = batch[j].coord[1:3]
-                dx, dy, dz = xj - xi, yj - yi, zj - zi
-                distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
-                idx += 1
+        for j in 1:N_atoms
+            if j == i
+                continue
             end
-
-            # costruiamo un nuovo AtomInput con stessa species ma features = distanze
-            out_batch[i] = G1Input(batch[i].species, distances)
+            xj, yj, zj = input[j].coord[1:3]
+            dx, dy, dz = xj - xi, yj - yi, zj - zi
+            distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+            idx += 1
         end
 
-        output[b] = out_batch
+        # costruiamo un nuovo AtomInput con stessa species ma features = distanze
+        output[i] = G1Input(input[i].species, distances)
     end
 
     return output
 end
+
+
+"""
+    distance_derivatives(input::Matrix{Vector{AtomInput}})
+
+Compute the analytical derivatives of interatomic distances for a batch of atomic systems.
+
+# Arguments
+- `input::Matrix{Vector{AtomInput}}`: A 2D array of atomic systems.  
+  Each row corresponds to a batch element, and each element is a vector of `AtomInput` objects.  
+  Each `AtomInput` must contain a `.coord` field with the 3D coordinates of the atom.
+
+# Returns
+- `Array{Float32, 4}`: An array of shape `(n_batch, n_atoms, n_atoms - 1, 3)` containing the derivatives:
+  - `outputs[b, i, j, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `i`.
+  - `outputs[b, j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `j+1`.
+  - Derivatives w.r.t. all other atoms are zero (not stored explicitly).
+
+# Notes
+- Derivatives are computed analytically:
+  ∂d_ij/∂r_i = (r_i - r_j) / d_ij  
+  ∂d_ij/∂r_j = (r_j - r_i) / d_ij  
+- If the distance is numerically zero, the derivative is set to `(0, 0, 0)`.
+"""
+function distance_derivatives(input::Matrix{Vector{AtomInput}})
+
+   
+    
+    if ndims(input) == 1
+        input = reshape(input,(1,:))
+    end
+
+    n_batch, _ = size(input)
+    n_atoms = size(input[1] , 1)
+ 
+    # Output tensor: (batch, i_atom, j_atom, coord)
+    outputs = Array{Float32, 4}(undef, n_batch, n_atoms, n_atoms - 1, 3)
+
+    for b in 1:n_batch
+        for i in 1:n_atoms
+            ri = input[b, 1][i].coord  # coordinates of atom i
+        
+            for j in i:(n_atoms-1)
+                rj = input[b, 1][j + 1].coord  # coordinates of atom j+1
+                diff = ri .- rj
+                dij = sqrt(sum(diff.^2))
+
+                if dij > 1e-12
+                    grad_i = diff ./ dij   # derivative w.r.t. atom i
+                    grad_j = -grad_i       # derivative w.r.t. atom j+1
+                else
+                    grad_i = zeros(Float32, 3)
+                    grad_j = zeros(Float32, 3)
+                end
+
+                # Store derivatives
+                outputs[b, i, j, :] = grad_i
+                outputs[b, j+1, i, :] = grad_j
+            end
+        end
+    end
+
+    return outputs
+end
+
+
+"""
+    distance_derivatives(input::Vector{AtomInput})
+
+Compute the analytical derivatives of interatomic distances for a single atomic system.
+
+# Arguments
+- `input::Vector{AtomInput}`: A vector of `AtomInput` objects representing the atoms in the system.  
+  Each `AtomInput` must contain a `.coord` field with the 3D coordinates of the atom.
+
+# Returns
+- `Array{Float32, 3}`: An array of shape `(n_atoms, n_atoms - 1, 3)` containing the derivatives:
+  - `outputs[i, j, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `i`.
+  - `outputs[j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `j+1`.
+  - Derivatives w.r.t. all other atoms are zero (not stored explicitly).
+
+# Notes
+- Derivatives are computed analytically as in the batched version.  
+- If the distance is numerically zero, the derivative is set to `(0, 0, 0)`.
+"""
+function distance_derivatives(input::Vector{AtomInput})
+  
+    n_atoms = size(input , 1)
+ 
+    # Output tensor: (i_atom, j_atom, coord)
+    outputs = Array{Float32, 3}(undef, n_atoms, n_atoms - 1, 3)
+
+    for i in 1:n_atoms
+        ri = input[i].coord  # coordinates of atom i
+        
+        for j in i:(n_atoms-1)
+            rj = input[j + 1].coord  # coordinates of atom j+1
+            diff = ri .- rj
+            dij = sqrt(sum(diff.^2))
+
+            if dij > 1e-12
+                grad_i = diff ./ dij   # derivative w.r.t. atom i
+                grad_j = -grad_i       # derivative w.r.t. atom j+1
+            else
+                grad_i = zeros(Float32, 3)
+                grad_j = zeros(Float32, 3)
+            end
+
+            # Store derivatives
+            outputs[i, j, :] = grad_i
+            outputs[j+1, i, :] = grad_j
+        end
+    end
+
+    return outputs
+end
+
 
 
 
@@ -304,21 +416,17 @@ Only the numerical `features` are passed to the model, so this is compatible wit
 # Returns
 - `outputs::Vector{Float32}`: Output of the correct model for each atom.
 """
-function dispatch(atoms::Vector{Vector{AtomInput}}, species_models::Vector{Chain})
+function dispatch(distances::Vector{G1Input}, species_models::Vector{Chain})
 
-    
 
-    n_batches = size(atoms[1])[1]
-    n_atoms = size(atoms[1,1])[1]
+    n_atoms = size(distances , 1)
 
     outputs = Vector{Float32}(undef, n_atoms)
 
 
-    distances = distance_matrix_layer(atoms)
-
-
     @inbounds for i in 1:n_atoms
-        distance = distances[1][i]
+
+        distance = distances[i]
         model = species_models[distance.species]
         outputs[i] = model(distance.dist)[1]  # assuming model outputs a 1-element vector
     end
@@ -328,18 +436,12 @@ function dispatch(atoms::Vector{Vector{AtomInput}}, species_models::Vector{Chain
     return outputs
 end
 
-function dispatch(atoms::Matrix{Vector{AtomInput}}, species_models::Vector{Chain})
-    n_batches = size(atoms)[1]
-    n_atoms = size(atoms[1,1])[1]
-
-
+function dispatch(distances::Matrix{G1Input}, species_models::Vector{Chain})
     
+    
+    n_batches , n_atoms = size(distances)
+     
     outputs = Matrix{Float32}(undef, (n_batches , n_atoms))
-
-
-    distances = distance_matrix_layer(atoms)
-
-
 
     @inbounds for i in 1:n_atoms
         distance = distances[: , i]
@@ -352,8 +454,15 @@ function dispatch(atoms::Matrix{Vector{AtomInput}}, species_models::Vector{Chain
 
     end
 
-    final_outputs = sum(outputs , dims = 2)
+    final_outputs = dropdims(sum(outputs, dims = 2); dims=2)
 
     return final_outputs
 end
 
+function dispatch_wd(atoms, species_models::Vector{Chain})
+
+    distance = distance_matrix_layer(atoms)
+
+    return(dispatch(distance , species_models))
+
+end

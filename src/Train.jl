@@ -4,7 +4,6 @@ using ProgressMeter
 
 
 
-
 """
     energy_loss(model, x, y) -> AbstractArray
 
@@ -112,7 +111,6 @@ Compute the combined energy + force loss for a single input.
 """
 function loss(models, x, y, fconst; λ::Float32=10.0f0)    
     e_loss = energy_loss( models , x , y)
-   
 
     return sum(e_loss .+ λ .* fconst)
 end
@@ -389,7 +387,6 @@ function train_model!(
 
   return model, best_model, loss_train, loss_val
 end
-
 
 
 

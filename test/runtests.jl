@@ -18,6 +18,7 @@ include("../src/Model.jl")
     @test size(dataset, 2) == N_atoms
 
 
+    lattice = all_cells[1]
     
     # Step 2: Create neural network input
     time_nn_input = @elapsed nn_input_dataset , all_forces, species_idx = prepare_nn_data(dataset, species , unique_species)
@@ -42,8 +43,8 @@ include("../src/Model.jl")
 
     x = x_train[1:3, :]
     y = y_train[1:3]
-    dist = distance_matrix_layer(x)
-    df_matrix = distance_derivatives(x)
+    dist = distance_matrix_layer(x ; lattice = lattice)
+    df_matrix = distance_derivatives(x ; lattice = lattice)
     e = extract_energies(y)
     f = extract_forces(y)
 
@@ -71,7 +72,7 @@ include("../src/Model.jl")
         species_models,
         x_train, y_train, 
         x_val, y_val,
-         epochs=1 , batch_size=3)
+         epochs=1 , batch_size=3 , lattice = lattice)
 
     println("Time for train_model!: ", time_train, " seconds")
 

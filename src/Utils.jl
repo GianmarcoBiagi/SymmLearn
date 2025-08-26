@@ -142,10 +142,10 @@ element_to_charge = Dict(
 Creates a dictionary that maps atomic charges to their corresponding element names.
 
 # Arguments
-- `element_charge::Dict{String, Float64}`: A dictionary where keys are element names (e.g., `"Cs"`, `"Pb"`, `"I"`) and values are their respective atomic charges.
+- `element_charge::Dict{String, Float32}`: A dictionary where keys are element names (e.g., `"Cs"`, `"Pb"`, `"I"`) and values are their respective atomic charges.
 
 # Returns
-- `Dict{Float64, String}`: A dictionary where keys are atomic charges and values are element names.
+- `Dict{Float32, String}`: A dictionary where keys are atomic charges and values are element names.
 
 # Example
 ```julia
@@ -160,51 +160,63 @@ println(charge_to_element)
 charge_to_element = Dict(v => k for (k, v) in element_to_charge)
 
 """
-    distance_with_pbc(pos1, pos2, lattice_vectors)
+    distance_atoms_pbc(atom1, atom2, lattice)
 
-Calculates the distance between two positions `pos1` and `pos2`, considering periodic boundary conditions (PBC).
-This function is useful when working with periodic systems such as crystalline solids, where particles on one side of the system interact with those on the opposite side.
+Compute the minimum-image distance between two atoms under periodic boundary conditions (PBC),
+valid for any (possibly non-orthogonal) lattice.
 
-#### Parameters:
-- `pos1::Vector{Float64}`: Position of the first point (3D vector).
-- `pos2::Vector{Float64}`: Position of the second point (3D vector).
-- `lattice_vectors::Matrix{Float64}`: Matrix of the lattice vectors of the system (3x3 matrix for a 3D system).
+# Arguments
+- `atom1::Vector{Float32}`: Cartesian coordinates of the first atom
+- `atom2::Vector{Float32}`: Cartesian coordinates of the second atom
+- `lattice::Matrix{Float32}`: 3x3 lattice matrix (columns are lattice vectors)
 
-#### Returns:
-- `Float64`: The distance between the two points considering periodic boundary conditions.
-
-#### Example:
-```julia
-# Define two points (positions) in 3D space
-pos1 = [1.0, 2.0, 3.0]
-pos2 = [3.0, 4.0, 5.0]
-
-# Define the lattice vectors of the system (3x3 matrix)
-lattice_vectors = [
-    10.0 0.0 0.0;
-    0.0 10.0 0.0;
-    0.0 0.0 10.0
-]
-
-# Calculate the distance between the two points with PBC
-distance = distance_with_pbc(pos1, pos2, lattice_vectors)
-println(distance)  # Output: The distance considering PBC
+# Returns
+- `d::Float32`: Minimum distance considering PBC
 """
+function d_pbc(atom1::AbstractVector{<:Real},
+                        atom2::AbstractVector{<:Real},
+                        lattice::AbstractMatrix{<:Real};
+                        coords::Symbol = :cartesian,
+                        return_image::Bool = false)
 
-function distance_with_pbc(pos1::Vector{Float32}, pos2::Vector{Float32}, lattice_vectors::Matrix{Float32})
-    # Convert cartesian positions to fractional coordinates
-    frac1 = lattice_vectors \ pos1
-    frac2 = lattice_vectors \ pos2
-    
-    # Compute displacement in fractional coordinates and wrap into [-0.5, 0.5)
-    delta_frac = frac2 .- frac1
-    delta_frac = delta_frac .- round.(delta_frac)
-    
-    # Convert back to cartesian coordinates
-    delta_cart = lattice_vectors * delta_frac
-    
-    # Return the Euclidean norm
-    return norm(delta_cart)
+    # --- input checks and conversion to Float32 arrays ---
+    @assert length(atom1) == 3 "atom1 must be length-3"
+    @assert length(atom2) == 3 "atom2 must be length-3"
+    @assert size(lattice) == (3,3) "lattice must be 3x3"
+
+    r1 = Float32.(atom1)
+    r2 = Float32.(atom2)
+    L  = Float32.(lattice)
+
+    # ensure lattice is invertible
+    detL = det(L)
+    @assert abs(detL) > 1e-12 "lattice matrix is (nearly) singular"
+
+    if coords == :fractional
+        # fractional -> compute fractional delta directly
+        delta_frac = r2 .- r1
+    elseif coords == :cartesian
+        # Cartesian -> convert delta to fractional
+        delta_cart = r2 .- r1
+        delta_frac = inv(L) * delta_cart
+    else
+        error("coords must be :cartesian or :fractional")
+    end
+
+    # Apply minimum-image convention in fractional coordinates
+    # n = round(delta_frac) gives the integer translation such that frac_min = delta_frac - n is in [-0.5,0.5)
+    n = round.(Int, delta_frac)            # integer translation vector (same behavior as round(.))
+    frac_min = delta_frac .- Float32.(n)   # fractional minimal-image vector
+
+    # Convert back to Cartesian to get the actual vector
+    rvec = L * frac_min
+    d = norm(rvec)
+
+    if return_image
+        return d, rvec, n
+    else
+        return d
+    end
 end
 
 
@@ -217,7 +229,7 @@ Computes a smooth cutoff function for distances between particles. The function 
 If `Rij` is less than `Rc`, the function computes a smooth transition based on the ratio between `Rij` and `Rc`, using an exponential function. The cutoff is made smoother using a small tolerance (`ε`) to handle edge cases where the value becomes too small.
 
 ### Arguments
-- `Rij::T`: The distance between two particles (numeric type `T`, e.g., `Float32` or `Float64`).
+- `Rij::T`: The distance between two particles (numeric type `T`, e.g., `Float32` or `Float32`).
 - `Rc::T`: The cutoff distance, beyond which the function returns 0.
 
 ### Returns
@@ -320,8 +332,8 @@ end
               if true            → return (n_batch*atoms*3)
 
     Returns:
-    - Array{Float64,2} if flat=false
-    - Array{Float64,1} if flat=true
+    - Array{Float32,2} if flat=false
+    - Array{Float32,1} if flat=true
     """
 
 function extract_forces(y; flat::Bool=false)

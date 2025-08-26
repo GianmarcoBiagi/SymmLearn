@@ -275,6 +275,9 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 - `forces::Bool=true`  
   Whether to include force loss in addition to energy loss.
 
+- `lattice::Union{Nothing, Matrix{Float32}}=nothing`  
+  If the distances must be computed using pbs pass the lattice as an input.
+
 # Returns
 - `model::Flux.Chain`  
   The model after the final training epoch.
@@ -298,15 +301,16 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 
 function train_model!(
     model,
-    x_train,
-    y_train,
-    x_val,
-    y_val;
-    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
-    epochs=1000, batch_size=32, verbose=false
+    x_train, y_train,
+    x_val, y_val;
+    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-5, decay_factor=0.1, patience=50,
+    epochs=1000, batch_size=32, verbose=false, lattice::Union{Nothing, Matrix{Float32}}=nothing
 )
 
-    opt = Flux.setup(Adam(initial_lr), model)
+    o =  OptimiserChain(ClipNorm(1.0), Adam(initial_lr))
+
+    # Setup dell'ottimizzatore con il modello
+    opt = Flux.setup(o, model)
     N = size(x_train , 1)
 
 
@@ -316,11 +320,11 @@ function train_model!(
     e_t = extract_energies(y_train)
     f_t = extract_forces(y_train)
 
-    dist_train = distance_matrix_layer(x_train)
-    dist_val = distance_matrix_layer(x_val)
+    dist_train = distance_matrix_layer(x_train ; lattice = lattice )
+    dist_val = distance_matrix_layer(x_val ; lattice = lattice)
 
-    d_matrix_train = distance_derivatives(x_train)
-    d_matrix_val = distance_derivatives(x_val)
+    d_matrix_train = distance_derivatives(x_train ; lattice = lattice)
+    d_matrix_val = distance_derivatives(x_val; lattice = lattice)
 
   
 
@@ -353,10 +357,11 @@ function train_model!(
 
         grad = Enzyme.gradient(set_runtime_activity(Reverse),
                               (m, x, ee, ff) -> loss(m, x, ee, ff ; λ),
-                              model, Const(xb), Const(e), Const(fconst))
- 
+                              model, Const(xb), Const(e), Const(fconst))[1]
 
-        Flux.update!(opt, model, grad[1])
+     
+
+        Flux.update!(opt, model, grad)
       end
 
       # Calcolo della loss sull’intero train e val set
@@ -368,15 +373,16 @@ function train_model!(
       loss_train[epoch] = loss(model, dist_train, e_t, fconst_t ; λ)
       loss_val[epoch]   = loss(model, dist_val,   e_v, fconst_v ; λ)
 
-      if loss_train[epoch] == NaN || loss_val[epoch] == NaN
+      if isnan(loss_train[epoch]) || isnan(loss_val[epoch])
         println("Something is wrong, the computed loss is NaN , getting out from the train function")
         break
       end
 
 
+
       if verbose && epoch%50 == 0
         println("The loss on the train dataset is $(loss_train[epoch])")
-        println("The loss on the train dataset is $(loss_val[epoch])")
+        println("The loss on the val dataset is $(loss_val[epoch])")
       end
 
       # Gestione decay del learning rate ed early stopping

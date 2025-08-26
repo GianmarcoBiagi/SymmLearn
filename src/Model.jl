@@ -143,24 +143,25 @@ end
 
 
 """
-    distance_matrix_layer(input::Matrix{Vector{AtomInput}})
+    distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice=nothing)
 
-Compute pairwise distances between atoms for each batch in a matrix of batches.
+Compute the pairwise distances between atoms for each batch in a matrix of batches.
+
+If a `lattice` is provided, distances are computed using the **minimum-image convention**
+under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances are used.
 
 # Arguments
-- `input`: A matrix of batches, where each element is a `Vector{AtomInput}`.
-  Each `AtomInput` has `.species::Int` and `.features::AbstractVector`
-  where `features` contains at least the 3D coordinates.
+- `input::Matrix{Vector{AtomInput}}`: A matrix of batches. Each element is a vector of `AtomInput`
+  objects containing `.species::Int` and `.coord::AbstractVector` (3D coordinates at least).
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
 
 # Returns
-- A matrix of the same size as `input`. Each element is a vector of `AtomInput`.
-  For each atom, the `species` is copied from the input, while `features`
-  contains the distances from all other atoms in that batch (length `N-1`).
+- `Matrix{G1Input}`: Same shape as `input`. Each `G1Input` contains `species` and a 1×(N-1) matrix of distances.
 """
-function distance_matrix_layer(input::Matrix{Vector{AtomInput}})
-    ϵ = Float32(1e-7)
+function distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+    ϵ = Float32(1e-7)   # small epsilon to avoid zero division
     batches, _ = size(input)
-    N_atoms = length(input[1])  # numero di atomi per batch
+    N_atoms = length(input[1])  # number of atoms per batch
 
     output = Matrix{G1Input}(undef, batches, N_atoms)
 
@@ -169,17 +170,23 @@ function distance_matrix_layer(input::Matrix{Vector{AtomInput}})
         out_batch = Vector{G1Input}(undef, N_atoms)
 
         for i in 1:N_atoms
-            xi, yi, zi = batch[i].coord[1:3]
-            distances = Matrix{Float32}(undef, 1, N_atoms - 1)  # <-- qui serve Matrix
+            distances = Matrix{Float32}(undef, 1, N_atoms - 1)  # store distances for atom i
             idx = 1
 
-            @inbounds for j in 1:N_atoms
+            for j in 1:N_atoms
                 if j == i
                     continue
                 end
-                xj, yj, zj = batch[j].coord[1:3]
-                dx, dy, dz = xj - xi, yj - yi, zj - zi
-                distances[1, idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+
+                if lattice === nothing
+                    # Cartesian distance
+                    dx, dy, dz = batch[j].coord[1:3] .- batch[i].coord[1:3]
+                    distances[1, idx] = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
+                else
+                    # Minimum-image distance under PBC
+                    distances[1, idx] = d_pbc(batch[i].coord[1:3], batch[j].coord[1:3], lattice)
+                end
+
                 idx += 1
             end
 
@@ -192,32 +199,48 @@ function distance_matrix_layer(input::Matrix{Vector{AtomInput}})
     return output
 end
 
+"""
+    distance_matrix_layer(input::Vector{AtomInput}; lattice=nothing)
 
+Compute pairwise distances between atoms in a single vector of `AtomInput` objects.
 
-function distance_matrix_layer(input::Vector{AtomInput})
+If a `lattice` is provided, distances are computed using **minimum-image convention**
+under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances are used.
+
+# Arguments
+- `input::Vector{AtomInput}`: Vector of `AtomInput` objects containing `.species` and `.coord`.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
+
+# Returns
+- `Vector{G1Input}`: Each `G1Input` contains `species` and a 1×(N-1) matrix of distances from all other atoms.
+"""
+function distance_matrix_layer(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)
-    
-    N_atoms = size(input, 1)
-
+    N_atoms = length(input)
 
     output = Vector{G1Input}(undef, N_atoms)
 
     for i in 1:N_atoms
-        xi, yi, zi = input[i].coord[1:3]
-        distances = Matrix{Float32}(undef, (1 , N_atoms-1))
+        distances = Matrix{Float32}(undef, 1, N_atoms-1)  # store distances for atom i
         idx = 1
 
         for j in 1:N_atoms
             if j == i
                 continue
             end
-            xj, yj, zj = input[j].coord[1:3]
-            dx, dy, dz = xj - xi, yj - yi, zj - zi
-            distances[idx] = sqrt(dx*dx + dy*dy + dz*dz + ϵ)
+
+            if lattice === nothing
+                # Cartesian distance
+                dx, dy, dz = input[j].coord[1:3] .- input[i].coord[1:3]
+                distances[1, idx] = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
+            else
+                # Minimum-image distance under PBC
+                distances[1, idx] = d_pbc(input[i].coord[1:3], input[j].coord[1:3], lattice)
+            end
+
             idx += 1
         end
 
-        # costruiamo un nuovo AtomInput con stessa species ma features = distanze
         output[i] = G1Input(input[i].species, distances)
     end
 
@@ -225,60 +248,70 @@ function distance_matrix_layer(input::Vector{AtomInput})
 end
 
 
-"""
-    distance_derivatives(input::Matrix{Vector{AtomInput}})
 
-Compute the analytical derivatives of interatomic distances for a batch of atomic systems.
+"""
+    distance_derivatives(input::Matrix{Vector{AtomInput}}; lattice=nothing)
+
+Compute the analytical derivatives of pairwise interatomic distances for a batch of atomic systems.
+
+If `lattice` is provided, distances and derivatives are computed using the **minimum-image convention**
+under periodic boundary conditions (PBC). Otherwise, standard Cartesian distances are used.
 
 # Arguments
-- `input::Matrix{Vector{AtomInput}}`: A 2D array of atomic systems.  
-  Each row corresponds to a batch element, and each element is a vector of `AtomInput` objects.  
-  Each `AtomInput` must contain a `.coord` field with the 3D coordinates of the atom.
+- `input::Matrix{Vector{AtomInput}}`: 2D array of atomic systems. Each element is a vector of `AtomInput`
+  objects containing `.coord` fields with 3D coordinates.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
 
 # Returns
-- `Array{Float32, 4}`: An array of shape `(n_batch, n_atoms, n_atoms - 1, 3)` containing the derivatives:
-  - `outputs[b, i, j, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `i`.
-  - `outputs[b, j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `j+1`.
-  - Derivatives w.r.t. all other atoms are zero (not stored explicitly).
+- `Array{Float32, 4}`: Tensor of shape `(n_batch, n_atoms, n_atoms-1, 3)`:
+  - `outputs[b, i, j, :]` → derivative of distance `d(i, j+1)` w.r.t atom `i`.
+  - `outputs[b, j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t atom `j+1`.
+  - Derivatives w.r.t. other atoms are zero (not stored).
 
 # Notes
-- Derivatives are computed analytically:
-  ∂d_ij/∂r_i = (r_i - r_j) / d_ij  
-  ∂d_ij/∂r_j = (r_j - r_i) / d_ij  
-- If the distance is numerically zero, the derivative is set to `(0, 0, 0)`.
+- If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
 """
-function distance_derivatives(input::Matrix{Vector{AtomInput}})
-
-   
-    
+function distance_derivatives(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+    # Ensure input has batch dimension
     if ndims(input) == 1
-        input = reshape(input,(1,:))
+        input = reshape(input, (1, :))
     end
 
     n_batch, _ = size(input)
-    n_atoms = size(input[1] , 1)
- 
+    n_atoms = length(input[1, 1])
+
     # Output tensor: (batch, i_atom, j_atom, coord)
-    outputs = Array{Float32, 4}(undef, n_batch, n_atoms, n_atoms - 1, 3)
+    outputs = Array{Float32, 4}(undef, n_batch, n_atoms, n_atoms-1, 3)
 
     for b in 1:n_batch
-        for i in 1:n_atoms
-            ri = input[b, 1][i].coord  # coordinates of atom i
-        
-            for j in i:(n_atoms-1)
-                rj = input[b, 1][j + 1].coord  # coordinates of atom j+1
-                diff = ri .- rj
-                dij = sqrt(sum(diff.^2))
+        batch = input[b, 1]
 
+        for i in 1:n_atoms
+            ri = batch[i].coord
+
+            for j in i:(n_atoms-1)
+                rj = batch[j+1].coord
+
+                # Compute difference vector
+                if lattice === nothing
+                    diff = ri .- rj
+                    dij = sqrt(sum(diff.^2))
+                else
+                    # Minimum-image vector and distance
+                    dij, rvec, _ = d_pbc(ri, rj, lattice; return_image=true)
+                    diff = rvec
+                end
+
+                # Compute derivatives
                 if dij > 1e-12
-                    grad_i = diff ./ dij   # derivative w.r.t. atom i
-                    grad_j = -grad_i       # derivative w.r.t. atom j+1
+                    grad_i = diff ./ dij
+                    grad_j = -grad_i
                 else
                     grad_i = zeros(Float32, 3)
                     grad_j = zeros(Float32, 3)
                 end
 
-                # Store derivatives
+                # Store in output tensor
                 outputs[b, i, j, :] = grad_i
                 outputs[b, j+1, i, :] = grad_j
             end
@@ -289,40 +322,51 @@ function distance_derivatives(input::Matrix{Vector{AtomInput}})
 end
 
 
-"""
-    distance_derivatives(input::Vector{AtomInput})
 
-Compute the analytical derivatives of interatomic distances for a single atomic system.
+"""
+    distance_derivatives(input::Vector{AtomInput}; lattice=nothing)
+
+Compute the analytical derivatives of pairwise interatomic distances for a single atomic system.
+
+If `lattice` is provided, distances and derivatives are computed using the **minimum-image convention**
+under periodic boundary conditions (PBC). Otherwise, standard Cartesian distances are used.
 
 # Arguments
-- `input::Vector{AtomInput}`: A vector of `AtomInput` objects representing the atoms in the system.  
-  Each `AtomInput` must contain a `.coord` field with the 3D coordinates of the atom.
+- `input::Vector{AtomInput}`: Vector of atoms. Each `AtomInput` must have a `.coord` field with 3D coordinates.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
 
 # Returns
-- `Array{Float32, 3}`: An array of shape `(n_atoms, n_atoms - 1, 3)` containing the derivatives:
-  - `outputs[i, j, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `i`.
-  - `outputs[j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t. atom `j+1`.
-  - Derivatives w.r.t. all other atoms are zero (not stored explicitly).
+- `Array{Float32, 3}`: Tensor of shape `(n_atoms, n_atoms-1, 3)`:
+  - `outputs[i, j, :]` → derivative of distance `d(i, j+1)` w.r.t atom `i`.
+  - `outputs[j+1, i, :]` → derivative of distance `d(i, j+1)` w.r.t atom `j+1`.
+  - Derivatives w.r.t. other atoms are zero (not stored).
 
 # Notes
-- Derivatives are computed analytically as in the batched version.  
-- If the distance is numerically zero, the derivative is set to `(0, 0, 0)`.
+- If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
 """
-function distance_derivatives(input::Vector{AtomInput})
-  
-    n_atoms = size(input , 1)
- 
+function distance_derivatives(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+    n_atoms = length(input)
+
     # Output tensor: (i_atom, j_atom, coord)
     outputs = Array{Float32, 3}(undef, n_atoms, n_atoms - 1, 3)
 
     for i in 1:n_atoms
-        ri = input[i].coord  # coordinates of atom i
-        
-        for j in i:(n_atoms-1)
-            rj = input[j + 1].coord  # coordinates of atom j+1
-            diff = ri .- rj
-            dij = sqrt(sum(diff.^2))
+        ri = input[i].coord
 
+        for j in i:(n_atoms-1)
+            rj = input[j+1].coord
+
+            # Compute difference vector
+            if lattice === nothing
+                diff = ri .- rj
+                dij = sqrt(sum(diff.^2))
+            else
+                # For PBC: use minimum-image distance and vector
+                dij, rvec, _ = d_pbc(ri, rj, lattice; return_image=true)
+                diff = rvec  # vector along minimum-image
+            end
+
+            # Compute derivatives
             if dij > 1e-12
                 grad_i = diff ./ dij   # derivative w.r.t. atom i
                 grad_j = -grad_i       # derivative w.r.t. atom j+1
@@ -331,7 +375,7 @@ function distance_derivatives(input::Vector{AtomInput})
                 grad_j = zeros(Float32, 3)
             end
 
-            # Store derivatives
+            # Store derivatives in output tensor
             outputs[i, j, :] = grad_i
             outputs[j+1, i, :] = grad_j
         end
@@ -339,6 +383,7 @@ function distance_derivatives(input::Vector{AtomInput})
 
     return outputs
 end
+
 
 
 
@@ -362,21 +407,25 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , dep
     if depth == 2
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge) ; seed),
-        Dense(G1_number, 15, tanh), 
-        Dense(15, 10, tanh),
-        Dense(10, 5, tanh),
-        Dense(5, 1)
+        LayerNorm(G1_number),
+        Dense(G1_number, 32, tanh), 
+        LayerNorm(32),
+        Dense(32, 16, tanh),
+        LayerNorm(16),
+        Dense(16, 8, tanh),
+        LayerNorm(8),
+        Dense(8, 1)
     )
     elseif depth == 1
 
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
         LayerNorm(G1_number),
-        Dense(G1_number , 32 , tanh),
-        LayerNorm(32),
-        Dense(32,16,tanh),
+        Dense(G1_number , 16 , tanh),
         LayerNorm(16),
-        Dense(16, 1)   
+        Dense(16,8,tanh),
+        LayerNorm(8),
+        Dense(8, 1)   
     )
 
 

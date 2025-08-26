@@ -49,25 +49,38 @@ Flux.@layer G1Layer trainable = (W_eta,W_Fs,)
 """
     G1Layer(N_G1::Int, cutoff::Float32, charge::Float32) -> G1Layer
 
-Creates an instance of the custom `G1Layer` layer with the specified input dimension, hidden dimension,
-cutoff radius, and atomic charge. The layer is initialized with random weights for the `eta` and `Fs` parameters.
+Creates an instance of the custom `G1Layer` with the specified number of radial symmetry functions (`N_G1`), 
+cutoff radius, and atomic charge. The layer initializes the `Fs` parameters uniformly across the 
+physically relevant distance range (from 0 Å to the cutoff) with a small random jitter, 
+and sets `eta` values based on the spacing between `Fs` to ensure adequate coverage and sensitivity 
+to interatomic distances.
 
 ### Arguments:
-- `N_G1::Int`: The number of G1 symmetry functions used.
+- `N_G1::Int`: The number of G1 radial symmetry functions.
 - `cutoff::Float32`: The cutoff radius for the layer's calculations.
-- `charge::Float32`: The atomic charge associated with the layer.
+- `charge::Float32`: The atomic charge associated with the layer, used as a scaling factor.
 
 ### Returns:
-- An instance of the `G1Layer` layer with random weights for `eta` and `Fs`.
+- An instance of `G1Layer` with physically-informed initial weights for `Fs` and `eta`.
+- `Fs` are distributed across the relevant distance range with small random jitter.
+- `eta` values are proportional to the spacing between `Fs` to ensure Gaussian functions cover the range effectively.
 """
-function G1Layer( N_G1::Int, cutoff::Float32, charge::Float32)
-    # Initialize weights for eta and Fs with random values
-   W_eta = 0.25f0 .+ 2.5f0 .* rand(Float32, N_G1)
-    W_Fs  = 0.25f0 .+ 2.5f0 .* rand(Float32, N_G1)
 
-    # Create and return the G1Layer instance
+function G1Layer(N_G1::Int, cutoff::Float32, charge::Float32; seed::Union{Int,Nothing} = nothing)
+    # Scegli RNG: deterministico se seed è Int, globale se seed = nothing
+    rng = seed === nothing ? Random.GLOBAL_RNG : MersenneTwister(seed)
+
+    # Centri Fs distribuiti tra r_min e cutoff
+    W_Fs = collect(range(0f0, cutoff, length=N_G1)) .+ 0.05f0 .* rand(rng, Float32, N_G1)
+
+    # Larghezze delle Gaussiane coerenti con la distanza tra i centri
+    delta = maximum(W_Fs) - minimum(W_Fs)
+    eta_base = 4.0f0 / delta^2
+    W_eta = eta_base .* (0.8f0 .+ 0.4f0 .* rand(rng, Float32, N_G1))
+
     return G1Layer(W_eta, W_Fs, cutoff, charge)
 end
+
 
 
 
@@ -119,7 +132,7 @@ function (layer::G1Layer)(x::AbstractMatrix{Float32})
                 dx = x[b, n] - layer.W_Fs[f]
                 s += fc(x[b, n], layer.cutoff) * exp(-layer.W_eta[f] * dx * dx)
             end
-            output[f, b] = layer.charge * s
+            output[f, b] = 0.1f0 * layer.charge * s
         end
     end
 
@@ -344,11 +357,11 @@ The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
 
 
 
-function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int)
+function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int ; seed::Union{Int,Nothing} = nothing)
     ion_charge = element_to_charge[Atom_name]
     if depth == 2
     return Chain(
-        G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
+        G1Layer(G1_number, R_cutoff, Float32(ion_charge) ; seed),
         Dense(G1_number, 15, tanh), 
         Dense(15, 10, tanh),
         Dense(10, 5, tanh),
@@ -358,10 +371,12 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , dep
 
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
-        Dense(G1_number , 4 , tanh),
-        Dense(4, 3,tanh),  
-        Dense(3,3,tanh),
-        Dense(3, 1)   
+        LayerNorm(G1_number),
+        Dense(G1_number , 32 , tanh),
+        LayerNorm(32),
+        Dense(32,16,tanh),
+        LayerNorm(16),
+        Dense(16, 1)   
     )
 
 
@@ -388,13 +403,13 @@ to the correct model based on its numeric index.
 - `species_models::Vector{Chain}`: Array of models, ready for Enzyme differentiation.
 """
 function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
-                              G1_number::Int, R_cutoff::Float32 ; depth = 2::Int)
+                              G1_number::Int, R_cutoff::Float32 ; depth = 2::Int , seed::Union{Int,Nothing} = nothing)
     n_species = length(unique_species)
     species_models = Vector{Chain}(undef, n_species)
     
     for spec in unique_species
         idx = species_idx[spec]
-        species_models[idx] = build_branch(spec, G1_number, R_cutoff , depth)
+        species_models[idx] = build_branch(spec, G1_number, R_cutoff , depth ; seed = seed)
     end
     
     return species_models
@@ -464,7 +479,7 @@ function dispatch(distances::Matrix{G1Input}, species_models::Vector{Chain})
 
     final_outputs = dropdims(sum(outputs, dims = 2); dims=2)
 
-    return single_batch ? final_outputs[1] : final_outputs
+    return  final_outputs
 end
 
 function dispatch_wd(atoms, species_models::Vector{Chain})
@@ -474,3 +489,50 @@ function dispatch_wd(atoms, species_models::Vector{Chain})
     return(dispatch(distance , species_models))
 
 end
+
+"""
+    predict_forces(x, model; flat=false)
+
+Compute atomic forces from a trained model given atomic positions.
+
+# Arguments
+- `x::AbstractArray`: Batched input positions of shape `(n_batches, n_atoms, 3)`.  
+- `model`: The trained ML model used to predict the potential energy.  
+- `flat::Bool=false`: If `false`, returns forces with shape `(n_batches, n_atoms, 3)`.  
+  If `true`, returns a 1D vector where forces are flattened in the order:
+"""
+
+
+
+function predict_forces(x , model ; flat = false)
+    dist = distance_matrix_layer(x)
+    derivatives = distance_derivatives(x)
+
+    n_batches , _ = size(x)
+    n_atoms = size(x[1] , 1)
+
+    predicted_forces = zeros(Float32 , (n_batches , n_atoms , 3))
+
+    for b in 1:n_batches
+        grad = calculate_force(dist[b, :], model)
+        temp = zeros(Float32, n_atoms , 3)
+        for i in 1:n_atoms
+            contrib = sum(grad[i] .* derivatives[b,i, :, :], dims=1)  # (1,3)
+            temp[i , 1:3] .= vec(contrib)
+        end
+        predicted_forces[b, : , :] .= temp
+    end
+
+    if flat
+        flat_forces = Float32[]
+        for b in 1:n_batches
+            for i in 1:n_atoms
+                append!(flat_forces, predicted_forces[b,i,:])
+            end
+        end
+        return flat_forces
+    else
+        return predicted_forces
+    end
+end
+

@@ -248,14 +248,6 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
     e_val   .= (e_val .- e_mean) ./ e_std
     e_test  .= (e_test .- e_mean) ./ e_std
 
-    ##### --- FORCES: Feature-wise Z-score normalization --- #####
-    forces_mean = mean(f_train, dims=1)
-
-    forces_std  = std(f_train, dims=1, corrected=false) .+ ϵ
-
-    f_train .= (f_train .- forces_mean) ./ forces_std
-    f_val   .= (f_val   .- forces_mean) ./ forces_std
-    f_test  .= (f_test  .- forces_mean) ./ forces_std
 
 
     ##### --- Repack as Sample structs --- #####
@@ -265,7 +257,7 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
 
 
     ##### --- Return --- #####
-    return x_train[: , :], y_train, x_val[: , :], y_val, x_test[: , :], y_test, (e_mean, e_std, forces_mean, forces_std)
+    return x_train[: , :], y_train, x_val[: , :], y_val, x_test[: , :], y_test, (e_mean, e_std)
 end
 
 

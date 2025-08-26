@@ -39,7 +39,9 @@ function calculate_force( x::AbstractVector , model)
     # Enzyme gradient: returns a tuple (grad w.r.t model, grad w.r.t x)
     grad  = Enzyme.gradient(set_runtime_activity(Reverse) , (x,m) -> dispatch(x,m),  x , Const(model))
 
-    d_matrix = [g.dist for g in grad[1]]
+    d_matrix = [-g.dist for g in grad[1]]
+  
+
     return d_matrix
 
 end
@@ -91,7 +93,8 @@ function force_loss(model, X::Matrix{G1Input}, F::AbstractMatrix , F_matrix)
       force_loss(model, X[i , :] , F[i , :] , F_matrix[i , : , : ,:])
 
     end
-    return losses'
+
+    return losses
 end
 
 """
@@ -109,10 +112,11 @@ Compute the combined energy + force loss for a single input.
 # Returns
 - `Float32`: Total loss combining energy and force term.
 """
-function loss(models, x, y, fconst; λ::Float32=10.0f0)    
+function loss(models, x, y, fconst; λ::Float32=1.0f0)    
     e_loss = energy_loss( models , x , y)
 
-    return sum(e_loss .+ λ .* fconst)
+
+    return (mean(e_loss) .+ λ .* mean(fconst))
 end
 
 """
@@ -134,7 +138,7 @@ If yes, update `best_model`, `best_loss`, `best_epoch`, and reset `no_improve_co
 # Returns
 Updated `(best_model, best_loss, best_epoch, no_improve_count)`.
 """
-function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
+function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
     if loss_val < best_loss * tol
         return deepcopy(model), loss_val, epoch, 0
     else
@@ -298,7 +302,7 @@ function train_model!(
     y_train,
     x_val,
     y_val;
-    λ = 10.0f0 , forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
+    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-4, decay_factor=0.5, patience=25,
     epochs=1000, batch_size=32, verbose=false
 )
 
@@ -363,6 +367,17 @@ function train_model!(
 
       loss_train[epoch] = loss(model, dist_train, e_t, fconst_t ; λ)
       loss_val[epoch]   = loss(model, dist_val,   e_v, fconst_v ; λ)
+
+      if loss_train[epoch] == NaN || loss_val[epoch] == NaN
+        println("Something is wrong, the computed loss is NaN , getting out from the train function")
+        break
+      end
+
+
+      if verbose && epoch%50 == 0
+        println("The loss on the train dataset is $(loss_train[epoch])")
+        println("The loss on the train dataset is $(loss_val[epoch])")
+      end
 
       # Gestione decay del learning rate ed early stopping
       opt, current_lr, no_improve_count, stop_training =

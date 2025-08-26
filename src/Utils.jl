@@ -311,29 +311,36 @@ function extract_energies(X::Vector{Sample})
 end
 
 
-"""
-    extract_forces(X::Vector{Sample})
+   """
+    Extract forces from dataset y.
 
-Return the forces of a batch of samples.
+    Arguments:
+    - y     : dataset entry/entries containing forces
+    - flat  : if false (default) → return (n_batch, atoms*3)
+              if true            → return (n_batch*atoms*3)
 
-# Arguments
-- `X::Vector{Sample}`: a collection of samples.
+    Returns:
+    - Array{Float64,2} if flat=false
+    - Array{Float64,1} if flat=true
+    """
 
-# Returns
-- `forces_batch::Matrix{Float32}`: matrix of size `(n_batch, n_forces)`,  
-  where each row contains the forces of one sample.
-"""
-function extract_forces(X::Vector{Sample})
-    n_batch = length(X)
-    n_forces = length(X[1].forces)  # number of forces per single sample
+function extract_forces(y; flat::Bool=false)
+ 
+    # assumiamo che y sia una collezione di configurazioni con attributo `forces`
+    forces = [vec(config.forces) for config in y]  # ogni elemento: (atoms*3,)
 
-    forces_batch = zeros(Float32, (n_batch, n_forces))
-    for i in 1:n_batch
-        forces_batch[i, :] = X[i].forces
+    # stack in matrice (n_batch, atoms*3)
+    f_matrix = reduce(vcat, permutedims.(forces))  # ogni riga = una configurazione
+
+    if flat
+        return vcat(forces...)  # 1D (n_batch*atoms*3,)
+    else
+        return f_matrix       # 2D (n_batch, atoms*3)
     end
-
-    return forces_batch
 end
+
+
+
 
 
 

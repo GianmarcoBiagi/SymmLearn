@@ -49,7 +49,7 @@ include("../src/Model.jl")
 
     model_time = @elapsed batch_output = dispatch(dist , species_models)
     println("Time for computing the model output for a batch: ", model_time, " seconds")
-    @test size(batch_output) == (3 , 1)
+    @test size(batch_output) == (3 ,)
 
     f_loss_time = @elapsed fconst = force_loss( species_models, dist, f , df_matrix)
     println("Time for computing the force loss of a batch: ", f_loss_time, " seconds")

@@ -47,39 +47,40 @@ end
 Flux.@layer G1Layer trainable = (W_eta,W_Fs,)
 
 """
-    G1Layer(N_G1::Int, cutoff::Float32, charge::Float32) -> G1Layer
+    G1Layer(N_G1::Int, cutoff::Float32, charge::Float32; seed::Union{Int,Nothing}=nothing) -> G1Layer
 
-Creates an instance of the custom `G1Layer` with the specified number of radial symmetry functions (`N_G1`), 
-cutoff radius, and atomic charge. The layer initializes the `Fs` parameters uniformly across the 
-physically relevant distance range (from 0 Å to the cutoff) with a small random jitter, 
-and sets `eta` values based on the spacing between `Fs` to ensure adequate coverage and sensitivity 
-to interatomic distances.
+Create a G1 radial symmetry function layer with physically-informed initialization.
 
-### Arguments:
-- `N_G1::Int`: The number of G1 radial symmetry functions.
-- `cutoff::Float32`: The cutoff radius for the layer's calculations.
-- `charge::Float32`: The atomic charge associated with the layer, used as a scaling factor.
+- `Fs` are distributed linearly across the distance range [r_min, cutoff] with small random jitter.
+- `eta` values are set according to the average spacing between `Fs`, with slight random perturbations.
+- This initialization avoids extreme contributions from very small distances that can bias energy predictions.
 
-### Returns:
-- An instance of `G1Layer` with physically-informed initial weights for `Fs` and `eta`.
-- `Fs` are distributed across the relevant distance range with small random jitter.
-- `eta` values are proportional to the spacing between `Fs` to ensure Gaussian functions cover the range effectively.
+# Arguments
+- `N_G1::Int`: Number of G1 functions.
+- `cutoff::Float32`: Cutoff radius for interatomic interactions.
+- `charge::Float32`: Atomic charge used as scaling factor.
+- `seed::Int` or `nothing`: Optional RNG seed for reproducibility.
+
+# Returns
+- `G1Layer` instance with initialized `Fs` and `eta`.
 """
-
-function G1Layer(N_G1::Int, cutoff::Float32, charge::Float32; seed::Union{Int,Nothing} = nothing)
-    # Scegli RNG: deterministico se seed è Int, globale se seed = nothing
+function G1Layer(N_G1::Int, cutoff::Float32, charge::Float32; seed::Union{Int,Nothing}=nothing)
     rng = seed === nothing ? Random.GLOBAL_RNG : MersenneTwister(seed)
 
-    # Centri Fs distribuiti tra r_min e cutoff
-    W_Fs = collect(range(0f0, cutoff, length=N_G1)) .+ 0.05f0 .* rand(rng, Float32, N_G1)
+    # Avoid Fs too close to zero to prevent huge contributions
+    r_min = 0.1f0
+    W_Fs = range(r_min, cutoff, length=N_G1) .+ 0.01f0 .* rand(rng, Float32, N_G1)
 
-    # Larghezze delle Gaussiane coerenti con la distanza tra i centri
-    delta = maximum(W_Fs) - minimum(W_Fs)
-    eta_base = 4.0f0 / delta^2
+    # Compute average spacing and set eta proportional to 1/(spacing^2)
+    delta = diff(W_Fs)
+    avg_spacing = mean(delta)
+    eta_base = 1.0f0 / (avg_spacing^2)
     W_eta = eta_base .* (0.8f0 .+ 0.4f0 .* rand(rng, Float32, N_G1))
 
     return G1Layer(W_eta, W_Fs, cutoff, charge)
 end
+
+
 
 
 
@@ -167,30 +168,33 @@ function distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{
 
     @inbounds for I in 1:batches
         batch = input[I]
-        out_batch = Vector{G1Input}(undef, N_atoms)
+
+        # per ogni atomo prealloca il vettore distanze
+        dist_lists = [Matrix{Float32}(undef, 1, N_atoms-1) for _ in 1:N_atoms]
+        positions  = [1 for _ in 1:N_atoms]
 
         for i in 1:N_atoms
-            distances = Matrix{Float32}(undef, 1, N_atoms - 1)  # store distances for atom i
-            idx = 1
-
-            for j in 1:N_atoms
-                if j == i
-                    continue
-                end
-
+            for j in (i+1):N_atoms
                 if lattice === nothing
-                    # Cartesian distance
                     dx, dy, dz = batch[j].coord[1:3] .- batch[i].coord[1:3]
-                    distances[1, idx] = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
+                    d = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
                 else
-                    # Minimum-image distance under PBC
-                    distances[1, idx] = d_pbc(batch[i].coord[1:3], batch[j].coord[1:3], lattice)
+                    d = d_pbc(batch[i].coord[1:3], batch[j].coord[1:3], lattice)
                 end
 
-                idx += 1
-            end
+                # scrivi nei vettori dei due atomi
+                dist_lists[i][1, positions[i]] = d
+                positions[i] += 1
 
-            out_batch[i] = G1Input(batch[i].species, distances)
+                dist_lists[j][1, positions[j]] = d
+                positions[j] += 1
+            end
+        end
+
+        # costruisci il G1Input per ogni atomo
+        out_batch = Vector{G1Input}(undef, N_atoms)
+        for i in 1:N_atoms
+            out_batch[i] = G1Input(batch[i].species, dist_lists[i])
         end
 
         output[I, :] = out_batch
@@ -198,6 +202,7 @@ function distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{
 
     return output
 end
+
 
 """
     distance_matrix_layer(input::Vector{AtomInput}; lattice=nothing)
@@ -218,34 +223,40 @@ function distance_matrix_layer(input::Vector{AtomInput}; lattice::Union{Nothing,
     ϵ = Float32(1e-7)
     N_atoms = length(input)
 
-    output = Vector{G1Input}(undef, N_atoms)
+    # prealloca per ogni atomo un vettore di distanze
+    dist_lists = [Matrix{Float32}(undef, 1, N_atoms-1) for _ in 1:N_atoms]
+
+    # indici "locali" per riempire i vettori (perché hanno dimensione N_atoms-1)
+    positions = [1 for _ in 1:N_atoms]
 
     for i in 1:N_atoms
-        distances = Matrix{Float32}(undef, 1, N_atoms-1)  # store distances for atom i
-        idx = 1
-
-        for j in 1:N_atoms
-            if j == i
-                continue
-            end
-
+        for j in (i+1):N_atoms
             if lattice === nothing
-                # Cartesian distance
                 dx, dy, dz = input[j].coord[1:3] .- input[i].coord[1:3]
-                distances[1, idx] = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
+                d = sqrt(dx^2 + dy^2 + dz^2 + ϵ)
             else
-                # Minimum-image distance under PBC
-                distances[1, idx] = d_pbc(input[i].coord[1:3], input[j].coord[1:3], lattice)
+                d = d_pbc(input[i].coord[1:3], input[j].coord[1:3], lattice)
             end
 
-            idx += 1
-        end
+            # scrivi in distanze di i
+            dist_lists[i][1, positions[i]] = d
+            positions[i] += 1
 
-        output[i] = G1Input(input[i].species, distances)
+            # scrivi in distanze di j
+            dist_lists[j][1, positions[j]] = d
+            positions[j] += 1
+        end
+    end
+
+    # costruisci i G1Input
+    output = Vector{G1Input}(undef, N_atoms)
+    for i in 1:N_atoms
+        output[i] = G1Input(input[i].species, dist_lists[i])
     end
 
     return output
 end
+
 
 
 
@@ -395,24 +406,24 @@ end
 
 Builds a per-species subnetwork consisting of:
 - A `G1Layer` configured with species charge.
-- A single Dense layer with tanh activation to output scalar atomic energy.
+- A single Dense layer with swish activation to output scalar atomic energy.
 
 The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
 """
 
 
 
-function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int ; seed::Union{Int,Nothing} = nothing)
+function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int = 2 ; seed::Union{Int,Nothing} = nothing)
     ion_charge = element_to_charge[Atom_name]
     if depth == 2
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge) ; seed),
         LayerNorm(G1_number),
-        Dense(G1_number, 32, tanh), 
+        Dense(G1_number, 32, swish), 
         LayerNorm(32),
-        Dense(32, 16, tanh),
+        Dense(32, 16, swish),
         LayerNorm(16),
-        Dense(16, 8, tanh),
+        Dense(16, 8, swish),
         LayerNorm(8),
         Dense(8, 1)
     )
@@ -421,9 +432,9 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , dep
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge)),
         LayerNorm(G1_number),
-        Dense(G1_number , 16 , tanh),
+        Dense(G1_number , 16 , swish),
         LayerNorm(16),
-        Dense(16,8,tanh),
+        Dense(16,8, swish),
         LayerNorm(8),
         Dense(8, 1)   
     )
@@ -531,9 +542,9 @@ function dispatch(distances::Matrix{G1Input}, species_models::Vector{Chain})
     return  final_outputs
 end
 
-function dispatch_wd(atoms, species_models::Vector{Chain})
+function dispatch_wd(atoms, species_models::Vector{Chain} ; lattice::Union{Nothing, Matrix{Float32}} = nothing)
 
-    distance = distance_matrix_layer(atoms)
+    distance = distance_matrix_layer(atoms ; lattice = lattice)
 
     return(dispatch(distance , species_models))
 

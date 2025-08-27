@@ -68,7 +68,7 @@ include("../src/Model.jl")
 
     # Step 7: Train the model
     
-    time_train = @elapsed final_model,trained_model,train_loss,val_loss = train_model!(
+    time_train = @elapsed trained_model,train_loss,val_loss = train_model!(
         species_models,
         x_train, y_train, 
         x_val, y_val,
@@ -78,7 +78,7 @@ include("../src/Model.jl")
 
     # Check to see if parameters actually changed after the training
 
-    trained_params , _ = Flux.destructure(final_model)
+    trained_params , _ = Flux.destructure(trained_model)
 
     @test trained_params != params
   

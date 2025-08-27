@@ -19,7 +19,10 @@ Compute the squared error between predicted energy and reference energy.
 """
 function energy_loss( model, x, y)
 
-    return (dispatch(x , model) .- y).^2
+    e_guess = dispatch(x , model)
+
+
+    return (e_guess .- y).^2
 end
 
 """disp
@@ -45,7 +48,6 @@ function calculate_force( x::AbstractVector , model)
     return d_matrix
 
 end
-
 
 
 
@@ -113,10 +115,8 @@ Compute the combined energy + force loss for a single input.
 - `Float32`: Total loss combining energy and force term.
 """
 function loss(models, x, y, fconst; λ::Float32=1.0f0)    
-    e_loss = energy_loss( models , x , y)
-
-
-    return (mean(e_loss) .+ λ .* mean(fconst))
+  e_loss = energy_loss( models , x , y)
+  return (mean(e_loss) .+ λ .* mean(fconst))
 end
 
 """
@@ -279,8 +279,6 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
   If the distances must be computed using pbs pass the lattice as an input.
 
 # Returns
-- `model::Flux.Chain`  
-  The model after the final training epoch.
 
 - `best_model::Flux.Chain`  
   Model achieving the lowest validation loss during training.
@@ -303,7 +301,7 @@ function train_model!(
     model,
     x_train, y_train,
     x_val, y_val;
-    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-5, decay_factor=0.1, patience=50,
+    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-6, decay_factor=0.1, patience=50,
     epochs=1000, batch_size=32, verbose=false, lattice::Union{Nothing, Matrix{Float32}}=nothing
 )
 
@@ -354,12 +352,13 @@ function train_model!(
 
         fconst = forces ? force_loss(model, xb, f , x_der) : 0f0
    
+  
 
         grad = Enzyme.gradient(set_runtime_activity(Reverse),
                               (m, x, ee, ff) -> loss(m, x, ee, ff ; λ),
                               model, Const(xb), Const(e), Const(fconst))[1]
 
-     
+      
 
         Flux.update!(opt, model, grad)
       end
@@ -375,12 +374,14 @@ function train_model!(
 
       if isnan(loss_train[epoch]) || isnan(loss_val[epoch])
         println("Something is wrong, the computed loss is NaN , getting out from the train function")
+        println("try a smaller learning rate!")
         break
       end
 
 
 
       if verbose && epoch%50 == 0
+        println("------- epoch  $epoch -------")
         println("The loss on the train dataset is $(loss_train[epoch])")
         println("The loss on the val dataset is $(loss_val[epoch])")
       end
@@ -406,7 +407,7 @@ function train_model!(
       println("Final Val Loss: ", loss_val[best_epoch])
   end
 
-  return model, best_model, loss_train, loss_val
+  return  best_model, loss_train, loss_val
 end
 
 

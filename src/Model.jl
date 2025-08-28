@@ -144,7 +144,7 @@ end
 
 
 """
-    distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice=nothing)
+    distance_layer(input::Matrix{Vector{AtomInput}}; lattice=nothing)
 
 Compute the pairwise distances between atoms for each batch in a matrix of batches.
 
@@ -159,7 +159,7 @@ under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances 
 # Returns
 - `Matrix{G1Input}`: Same shape as `input`. Each `G1Input` contains `species` and a 1×(N-1) matrix of distances.
 """
-function distance_matrix_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+function distance_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)   # small epsilon to avoid zero division
     batches, _ = size(input)
     N_atoms = length(input[1])  # number of atoms per batch
@@ -205,7 +205,7 @@ end
 
 
 """
-    distance_matrix_layer(input::Vector{AtomInput}; lattice=nothing)
+    distance_layer(input::Vector{AtomInput}; lattice=nothing)
 
 Compute pairwise distances between atoms in a single vector of `AtomInput` objects.
 
@@ -219,7 +219,7 @@ under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances 
 # Returns
 - `Vector{G1Input}`: Each `G1Input` contains `species` and a 1×(N-1) matrix of distances from all other atoms.
 """
-function distance_matrix_layer(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
+function distance_layer(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)
     N_atoms = length(input)
 
@@ -419,11 +419,11 @@ function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , dep
     return Chain(
         G1Layer(G1_number, R_cutoff, Float32(ion_charge) ; seed),
         LayerNorm(G1_number),
-        Dense(G1_number, 32, swish), 
+        Dense(G1_number, 64, swish), 
+        LayerNorm(64),
+        Dense(64, 32, swish),
         LayerNorm(32),
-        Dense(32, 16, swish),
-        LayerNorm(16),
-        Dense(16, 8, swish),
+        Dense(32, 8, swish),
         LayerNorm(8),
         Dense(8, 1)
     )
@@ -477,78 +477,107 @@ end
 
 
 """
-    dispatch(atoms::Vector{AtomInput}, species_models::Vector{Chain})
+    dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})
 
-Applies the correct model to each atom in `atoms` based on its `species`.  
-Only the numerical `features` are passed to the model, so this is compatible with Enzyme.
+Internal function for training.  
+Applies the correct model to each atom in the input vector of distances,  
+based on its `species` field.  
 
 # Arguments
-- `atoms::Vector{AtomInput}`: Batch of atoms with `species` and `features`.
-- `species_models::Vector{Chain}`: Array of models, indexed by species numeric ID.
+- `distances::Vector{G1Input}`: A batch of atomic inputs,  
+   where each element contains the atom's `species` ID and its neighbor distances.  
+- `species_models::Vector{Chain}`: One neural network model per species,  
+   indexed by the integer `species` ID.
 
 # Returns
-- `outputs::Vector{Float32}`: Output of the correct model for each atom.
+- `output::Float32`: The aggregated scalar prediction for the whole batch  
+   (sum of per-atom outputs).
 """
-function dispatch(distances::Vector{G1Input}, species_models::Vector{Chain})
-
-
-    n_atoms = size(distances , 1)
-
+function dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})
+    n_atoms = length(distances)
     outputs = Vector{Float32}(undef, n_atoms)
 
-
     @inbounds for i in 1:n_atoms
-
         distance = distances[i]
         model = species_models[distance.species]
-        outputs[i] = model(distance.dist)[1]  # assuming model outputs a 1-element vector
+        outputs[i] = model(distance.dist)[1]  # assumes scalar output
     end
 
-    outputs = sum(outputs)
-
-    return outputs
+    return sum(outputs)
 end
 
-function dispatch(distances::Matrix{G1Input}, species_models::Vector{Chain})
-    
-    
-    n_batches , n_atoms = size(distances)
-     
-    outputs = Matrix{Float32}(undef, (n_batches , n_atoms))
+
+"""
+    dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})
+
+Internal function for training.  
+Handles a batched input of distances. Each column corresponds to one atom,  
+and each row to one batch element. For each atom, the correct species model  
+is applied across the batch.  
+
+# Arguments
+- `distances::Matrix{G1Input}`: Batched atomic inputs.  
+   - Size: `(n_batches, n_atoms)`  
+   - Each entry holds `species::Int` and `dist::Vector{Float32}`.  
+   - Species is assumed to be the same across all batches for a given atom.  
+- `species_models::Vector{Chain}`: One neural network model per species.
+
+# Returns
+- `outputs::Vector{Float32}`: A vector of length `n_batches`,  
+   each element is the aggregated prediction (sum over atoms)  
+   for that batch.
+"""
+function dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})
+    n_batches, n_atoms = size(distances)
+    outputs = Matrix{Float32}(undef, n_batches, n_atoms)
 
     @inbounds for i in 1:n_atoms
-        # All batches for atom i
+        # Extract one atom across all batches
         distance_col = distances[:, i]
 
-        # Determine species (assume same across batches)
+        # Determine correct model (species consistent across batches)
         model = species_models[distance_col[1].species]
 
-        # Preallocate buffer for model input
+        # Preallocate batch input buffer
         n_neighbors = length(distance_col[1].dist)
         batch_input = Array{Float32}(undef, n_batches, n_neighbors)
 
-        # Fill buffer without dynamic concatenation
+        # Fill buffer
         for b in 1:n_batches
             batch_input[b, :] = distance_col[b].dist
         end
 
-        # Forward pass
+        # Forward pass (produces one scalar per batch element)
         outputs[:, i] = vec(model(batch_input))
-
     end
 
-    final_outputs = dropdims(sum(outputs, dims = 2); dims=2)
-
-    return  final_outputs
+    # Aggregate per-atom predictions into per-batch scalars
+    return dropdims(sum(outputs, dims = 2); dims = 2)
 end
 
-function dispatch_wd(atoms, species_models::Vector{Chain} ; lattice::Union{Nothing, Matrix{Float32}} = nothing)
 
-    distance = distance_matrix_layer(atoms ; lattice = lattice)
+"""
+    dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, Matrix{Float32}} = nothing)
 
-    return(dispatch(distance , species_models))
+Public API function.  
+Computes the distance representation of a set of atoms (optionally within a lattice),  
+then applies the appropriate species-specific models via `dispatch_train`.  
 
+# Arguments
+- `atoms`: Atomic structure input, suitable for `distance_layer`.  
+- `species_models::Vector{Chain}`: One neural network model per species.  
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional lattice matrix for periodic systems.  
+   Defaults to `nothing` (no periodic boundary conditions).
+
+# Returns
+- `outputs`: Model predictions, either a scalar (single batch)  
+   or a vector (batched input), depending on the input format.
+"""
+function dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, Matrix{Float32}} = nothing)
+    distances = distance_layer(atoms; lattice = lattice)
+    return dispatch_train(distances, species_models)
 end
+
 
 """
     predict_forces(x, model; flat=false)
@@ -565,7 +594,7 @@ Compute atomic forces from a trained model given atomic positions.
 
 
 function predict_forces(x , model ; flat = false)
-    dist = distance_matrix_layer(x)
+    dist = distance_layer(x)
     derivatives = distance_derivatives(x)
 
     n_batches , _ = size(x)
@@ -577,20 +606,18 @@ function predict_forces(x , model ; flat = false)
         grad = calculate_force(dist[b, :], model)
         temp = zeros(Float32, n_atoms , 3)
         for i in 1:n_atoms
-            contrib = sum(grad[i] .* derivatives[b,i, :, :], dims=1)  # (1,3)
+
+            contrib =  (grad[i] * derivatives[b,i, :, :])  # (1,3)
             temp[i , 1:3] .= vec(contrib)
+       
         end
+
         predicted_forces[b, : , :] .= temp
     end
 
     if flat
-        flat_forces = Float32[]
-        for b in 1:n_batches
-            for i in 1:n_atoms
-                append!(flat_forces, predicted_forces[b,i,:])
-            end
-        end
-        return flat_forces
+ 
+        return vcat(predicted_forces...)
     else
         return predicted_forces
     end

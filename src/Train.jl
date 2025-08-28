@@ -1,227 +1,6 @@
+using ProgressMeter
 using Flux
 using Enzyme
-using ProgressMeter
-
-
-
-"""
-    energy_loss(model, x, y) -> AbstractArray
-
-Compute the squared error between predicted energy and reference energy.
-
-# Arguments
-- `model::Function`: A callable model.
-- `x`: Input structure.
-- `y`: Reference scalar energy.
-
-# Returns
-- Squared error as an array.
-"""
-function energy_loss( model, x, y)
-
-    e_guess = dispatch(x , model)
-
-
-    return (e_guess .- y).^2
-end
-
-"""disp
-    calculate_force(model, x::AbstractVector) -> AbstractVector
-
-Compute the negative gradient of the scalar model output w.r.t. input `x`, i.e., the predicted forces.
-
-# Arguments
-- `model::Function`: Callable model.
-- `x::AbstractVector`: Single input structure.
-
-# Returns
-- `AbstractVector`: Predicted forces of same size as `x`.
-"""
-function calculate_force( x::AbstractVector , model)
-
-    # Enzyme gradient: returns a tuple (grad w.r.t model, grad w.r.t x)
-    grad  = Enzyme.gradient(set_runtime_activity(Reverse) , (x,m) -> dispatch(x,m),  x , Const(model))
-
-    d_matrix = [-g.dist for g in grad[1]]
-  
-
-    return d_matrix
-
-end
-
-
-
-
-"""
-    force_loss(model, x::AbstractVector, f::AbstractVector) -> Float32
-
-Compute mean squared error (MSE) between predicted and reference forces for a single input.
-
-# Arguments
-- `model::Function`: Callable model.
-- `x::AbstractVector`: Single input structure.
-- `f::AbstractVector`: Reference forces.
-
-# Returns
-- `Float32`: MSE loss for this input.
-"""
-function force_loss(model, x::AbstractVector,  f , f_matrix)
-    d_matrix = calculate_force(x , model)
-
-    predicted_forces = reduce(hcat, (d_matrix[i] * f_matrix[i, :, :] for i in 1:size(d_matrix, 1)))
-
-
-    return mean((predicted_forces .- f') .^2)
-end
-
-"""
-    force_loss(model, X::AbstractMatrix, F::AbstractMatrix) -> Vector{Float32}
-
-Compute force losses for a batch of inputs.
-
-# Arguments
-- `model::Function`: Callable model.
-- `X::AbstractMatrix`: Batch of inputs (rows = examples).
-- `F::AbstractMatrix`: Corresponding reference forces.
-
-# Returns
-- `Vector{Float32}`: Force loss for each example in the batch.
-"""
-function force_loss(model, X::Matrix{G1Input}, F::AbstractMatrix , F_matrix)
-    # Map each example in the batch to its force loss
- 
-    losses = map(1:size(X, 1)) do i
-
-      force_loss(model, X[i , :] , F[i , :] , F_matrix[i , : , : ,:])
-
-    end
-
-    return losses
-end
-
-"""
-    loss(model, x, y, fconst; λ=0.5f0) -> Float32
-
-Compute the combined energy + force loss for a single input.
-
-# Arguments
-- `model::Function`: Callable model.
-- `x`: Input structure.
-- `y`: Reference energy.
-- `fconst`: Precomputed force term (treated as constant).
-- `λ::Float32`: Weight for the force contribution (default 0.5).
-
-# Returns
-- `Float32`: Total loss combining energy and force term.
-"""
-function loss(models, x, y, fconst; λ::Float32=1.0f0)    
-  e_loss = energy_loss( models , x , y)
-  return (mean(e_loss) .+ λ .* mean(fconst))
-end
-
-"""
-    maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
-
-Check if the current validation loss is better than the best recorded loss (by a factor `tol`).
-If yes, update `best_model`, `best_loss`, `best_epoch`, and reset `no_improve_count`.
-
-# Arguments
-- `model`: the current model.
-- `loss_val`: validation loss at the current epoch.
-- `epoch`: current epoch number.
-- `best_model`: current best model (deepcopy will be done if improved).
-- `best_loss`: best validation loss recorded so far.
-- `best_epoch`: epoch number of the best model.
-- `no_improve_count`: counter for epochs without improvement.
-- `tol`: improvement tolerance factor (default: `0.98`).
-
-# Returns
-Updated `(best_model, best_loss, best_epoch, no_improve_count)`.
-"""
-function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
-    if loss_val < best_loss * tol
-        return deepcopy(model), loss_val, epoch, 0
-    else
-        return best_model, best_loss, best_epoch, no_improve_count + 1
-    end
-end
-
-
-"""
-    maybe_decay_lr!(opt::Flux.Optimise.Adam, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
-
-Decay the learning rate of the Adam optimizer in place after `patience` epochs without improvement.
-Preserves optimizer state (momenta).
-
-# Arguments
-- `opt`: Adam optimizer (with internal state).
-- `current_lr`: current learning rate (Float).
-- `no_improve_count`: epochs without improvement.
-- `patience`: patience threshold before decaying LR.
-- `decay_factor`: multiplicative factor to reduce LR.
-- `min_lr`: minimum allowed learning rate.
-- `epoch`: current epoch.
-- `verbose`: print info if true.
-
-# Returns
-Updated `(opt, current_lr, no_improve_count, stop_training::Bool)`.
-"""
-function maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
-    if no_improve_count >= patience
-        new_lr = max(current_lr * decay_factor, min_lr)
-        update_lr!(opt, new_lr)
-        if verbose
-            println("Reducing learning rate to $new_lr at epoch $epoch")
-        end
-        stop_training = new_lr <= min_lr
-        return opt, new_lr, 0, stop_training
-    else
-        return opt, current_lr, no_improve_count, false
-    end
-end
-
-
-"""
-    update_lr!(opt, new_lr)
-
-Update learning rate `eta` for all Adam leaves inside the optimizer state tree.
-"""
-function update_lr!(opt, new_lr)
-    for leaf in opt
-        for (k, v) in pairs(leaf)
-            if v isa Optimisers.Leaf && v.opt isa Flux.Optimise.Adam
-                v.opt.eta = new_lr
-            end
-        end
-    end
-    return opt
-end
-
-
-"""
-    batch_indices(n::Int, batchsize::Int) -> Vector{Vector{Int}}
-
-Generates shuffled mini-batch indices for a dataset.
-
-# Arguments
-- `n::Int`: Total number of samples in the dataset.
-- `batchsize::Int`: Desired size of each mini-batch.
-
-# Returns
-- `Vector{Vector{Int}}`: A vector of vectors, where each subvector contains 
-  the indices of the samples belonging to a mini-batch.  
-  The indices are shuffled before the dataset is split.
-"""
-
-
-function batch_indices(n, batchsize)
-    # Restituisce un vettore di vettori con gli indici dei batch
-    idx = collect(1:n)
-    shuffle!(idx)
-    [idx[i:min(i+batchsize-1, n)] for i in 1:batchsize:n]
-end
-
-
 
 
 """
@@ -283,7 +62,7 @@ using mini-batch gradient descent with adaptive learning rate and early stopping
 - `best_model::Flux.Chain`  
   Model achieving the lowest validation loss during training.
 
-- `loss_train::Vector{Float32}`  
+- `loss_tr::Vector{Float32}`  
   Training loss per epoch (length equals number of epochs run).
 
 - `loss_val::Vector{Float32}`  
@@ -314,12 +93,12 @@ function train_model!(
 
     # Precompute validation targets
     e_v = extract_energies(y_val)
-    f_v = extract_forces(y_val)
+    f_v = extract_forces(y_val ; ndims = 2)
     e_t = extract_energies(y_train)
-    f_t = extract_forces(y_train)
+    f_t = extract_forces(y_train ; ndims = 2)
 
-    dist_train = distance_matrix_layer(x_train ; lattice = lattice )
-    dist_val = distance_matrix_layer(x_val ; lattice = lattice)
+    dist_train = distance_layer(x_train ; lattice = lattice )
+    dist_val = distance_layer(x_val ; lattice = lattice)
 
     d_matrix_train = distance_derivatives(x_train ; lattice = lattice)
     d_matrix_val = distance_derivatives(x_val; lattice = lattice)
@@ -333,7 +112,7 @@ function train_model!(
     no_improve_count = 0
  
 
-    loss_train = zeros(Float32, epochs)
+    loss_tr = zeros(Float32, epochs)
     loss_val   = zeros(Float32, epochs)
 
     @showprogress for epoch in 1:epochs
@@ -346,8 +125,8 @@ function train_model!(
         x_der = d_matrix_train[batch, : , : ,:]
     
 
-        e = extract_energies(yb)
-        f = extract_forces(yb)
+        e = e_t[batch]
+        f = f_t[batch , :]
             
 
         fconst = forces ? force_loss(model, xb, f , x_der) : 0f0
@@ -355,7 +134,7 @@ function train_model!(
   
 
         grad = Enzyme.gradient(set_runtime_activity(Reverse),
-                              (m, x, ee, ff) -> loss(m, x, ee, ff ; λ),
+                              (m, x, ee, ff) -> loss_train(m, x, ee, ff ; λ),
                               model, Const(xb), Const(e), Const(fconst))[1]
 
       
@@ -369,10 +148,10 @@ function train_model!(
       fconst_v = forces ? force_loss(model, dist_val, f_v, d_matrix_val)   : 0f0
 
 
-      loss_train[epoch] = loss(model, dist_train, e_t, fconst_t ; λ)
-      loss_val[epoch]   = loss(model, dist_val,   e_v, fconst_v ; λ)
+      loss_tr[epoch] = loss_train(model, dist_train, e_t, fconst_t ; λ)
+      loss_val[epoch]   = loss_train(model, dist_val,   e_v, fconst_v ; λ)
 
-      if isnan(loss_train[epoch]) || isnan(loss_val[epoch])
+      if isnan(loss_tr[epoch]) || isnan(loss_val[epoch])
         println("Something is wrong, the computed loss is NaN , getting out from the train function")
         println("try a smaller learning rate!")
         break
@@ -382,7 +161,7 @@ function train_model!(
 
       if verbose && epoch%50 == 0
         println("------- epoch  $epoch -------")
-        println("The loss on the train dataset is $(loss_train[epoch])")
+        println("The loss on the train dataset is $(loss_tr[epoch])")
         println("The loss on the val dataset is $(loss_val[epoch])")
       end
 
@@ -403,13 +182,117 @@ function train_model!(
   end
 
   if verbose
-      println("Final Train Loss: ", loss_train[best_epoch])
+      println("Final Train Loss: ", loss_tr[best_epoch])
       println("Final Val Loss: ", loss_val[best_epoch])
   end
 
-  return  best_model, loss_train, loss_val
+  return  best_model, loss_tr, loss_val
 end
 
+
+
+
+"""
+    maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
+
+Check if the current validation loss is better than the best recorded loss (by a factor `tol`).
+If yes, update `best_model`, `best_loss`, `best_epoch`, and reset `no_improve_count`.
+
+# Arguments
+- `model`: the current model.
+- `loss_val`: validation loss at the current epoch.
+- `epoch`: current epoch number.
+- `best_model`: current best model (deepcopy will be done if improved).
+- `best_loss`: best validation loss recorded so far.
+- `best_epoch`: epoch number of the best model.
+- `no_improve_count`: counter for epochs without improvement.
+- `tol`: improvement tolerance factor (default: `0.98`).
+
+# Returns
+Updated `(best_model, best_loss, best_epoch, no_improve_count)`.
+"""
+function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
+    if loss_val < best_loss * tol
+        return deepcopy(model), loss_val, epoch, 0
+    else
+        return best_model, best_loss, best_epoch, no_improve_count + 1
+    end
+end
+
+
+"""
+    maybe_decay_lr!(opt::Flux.Optimise.Adam, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
+
+Decay the learning rate of the Adam optimizer in place after `patience` epochs without improvement.
+Preserves optimizer state (momenta).
+
+# Arguments
+- `opt`: Adam optimizer (with internal state).
+- `current_lr`: current learning rate (Float).
+- `no_improve_count`: epochs without improvement.
+- `patience`: patience threshold before decaying LR.
+- `decay_factor`: multiplicative factor to reduce LR.
+- `min_lr`: minimum allowed learning rate.
+- `epoch`: current epoch.
+- `verbose`: print info if true.
+
+# Returns
+Updated `(opt, current_lr, no_improve_count, stop_training::Bool)`.
+"""
+function maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
+    if no_improve_count >= patience
+        new_lr = max(current_lr * decay_factor, min_lr)
+        update_lr!(opt, new_lr)
+        if verbose
+            println("Reducing learning rate to $new_lr at epoch $epoch")
+        end
+        stop_training = new_lr < min_lr
+        return opt, new_lr, 0, stop_training
+    else
+        return opt, current_lr, no_improve_count, false
+    end
+end
+
+
+"""
+    update_lr!(opt, new_lr)
+
+Update learning rate `eta` for all Adam leaves inside the optimizer state tree.
+"""
+function update_lr!(opt, new_lr)
+    for leaf in opt
+        for (k, v) in pairs(leaf)
+            if v isa Optimisers.Leaf && v.opt isa Flux.Optimise.Adam
+                v.opt.eta = new_lr
+            end
+        end
+    end
+    return opt
+end
+
+
+"""
+    batch_indices(n::Int, batchsize::Int) -> Vector{Vector{Int}}
+
+Generates shuffled mini-batch indices for a dataset.
+
+# Arguments
+- `n::Int`: Total number of samples in the dataset.
+- `batchsize::Int`: Desired size of each mini-batch.
+
+# Returns
+- `Vector{Vector{Int}}`: A vector of vectors, where each subvector contains 
+  the indices of the samples belonging to a mini-batch.  
+  The indices are shuffled before the dataset is split.
+"""
+
+
+function batch_indices(n, batchsize)
+    # Restituisce un vettore di vettori con gli indici dei batch
+    idx = collect(1:n)
+    shuffle!(idx)
+    [idx[i:min(i+batchsize-1, n)] for i in 1:batchsize:n]
+end
 
 
 

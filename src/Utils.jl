@@ -323,32 +323,65 @@ function extract_energies(X::Vector{Sample})
 end
 
 
-   """
-    Extract forces from dataset y.
+"""
+    extract_forces(y; ndims::Int=3)
 
-    Arguments:
-    - y     : dataset entry/entries containing forces
-    - flat  : if false (default) → return (n_batch, atoms*3)
-              if true            → return (n_batch*atoms*3)
+Extracts and reshapes atomic force vectors from a batch of data.
 
-    Returns:
-    - Array{Float32,2} if flat=false
-    - Array{Float32,1} if flat=true
-    """
+# Arguments
+- `y`: A collection (e.g., vector or array) of objects, where each element 
+  contains a field `forces` representing flattened atomic force components 
+  as a 1D array of length `3 * n_atoms`.
+- `ndims::Int=3`: Desired dimensionality of the returned tensor.  
+  - `3`: Returns a 3D tensor `(n_batch, n_atoms, 3)`  
+  - `2`: Returns a 2D matrix `(n_batch, n_atoms * 3)`  
+  - `1`: Returns a 1D vector `(n_batch * n_atoms * 3)`  
 
-function extract_forces(y; flat::Bool=false)
+# Returns
+- If `ndims == 3`: `Array{Float32, 3}` of shape `(n_batch, n_atoms, 3)`,  
+  where `forces[b, i, :]` contains the 3D force vector for atom `i` in batch `b`.  
+- If `ndims == 2`: `Array{Float32, 2}` of shape `(n_batch, n_atoms*3)`.  
+- If `ndims == 1`: `Array{Float32, 1}` of shape `(n_batch*n_atoms*3)`.  
+
+# Errors
+- Prints an error message if `ndims` is not 1, 2, or 3.  
+
+# Example
+```julia
+# Suppose y is a vector of structs, each with a field `.forces` containing 
+# forces like [fx1, fy1, fz1, fx2, fy2, fz2, ...].
+
+forces3d = extract_forces(y; ndims=3)  # shape: (n_batch, n_atoms, 3)
+forces2d = extract_forces(y; ndims=2)  # shape: (n_batch, n_atoms*3)
+forces1d = extract_forces(y; ndims=1)  # shape: (n_batch*n_atoms*3)
+"""
+
+function extract_forces(y::Vector{Sample}; ndims::Int=3)
  
-    # assumiamo che y sia una collezione di configurazioni con attributo `forces`
-    forces = [vec(config.forces) for config in y]  # ogni elemento: (atoms*3,)
+    n_batch = size(y , 1)
+    n_atoms = div(length(y[1].forces) , 3)
 
-    # stack in matrice (n_batch, atoms*3)
-    f_matrix = reduce(vcat, permutedims.(forces))  # ogni riga = una configurazione
+    forces = zeros(Float32 , (n_batch , n_atoms , 3))
 
-    if flat
-        return vcat(forces...)  # 1D (n_batch*atoms*3,)
-    else
-        return f_matrix       # 2D (n_batch, atoms*3)
+    for b in 1:n_batch
+
+        for i in 1:n_atoms
+
+            forces[b , i , :] = y[b].forces[1+3(i-1) : 3i]
+        end
     end
+
+    if ndims == 3
+
+        return (forces)
+    elseif ndims == 2
+
+        return (reshape(forces , n_batch , n_atoms*3))
+    elseif ndims == 1
+
+        return (vcat(forces...))
+    end
+    println("Errore , output format can only be 1,2 or 3 dimensional please set ndims accordingly")
 end
 
 

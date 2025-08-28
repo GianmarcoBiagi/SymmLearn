@@ -48,14 +48,14 @@ include("../src/Model.jl")
     e = extract_energies(y)
     f = extract_forces(y)
 
-    model_time = @elapsed batch_output = dispatch(dist , species_models)
+    model_time = @elapsed batch_output = dispatch_train(dist , species_models)
     println("Time for computing the model output for a batch: ", model_time, " seconds")
     @test size(batch_output) == (3 ,)
 
     f_loss_time = @elapsed fconst = force_loss( species_models, dist, f , df_matrix)
     println("Time for computing the force loss of a batch: ", f_loss_time, " seconds")
 
-    loss_time = @elapsed sample_loss = loss(species_models, dist, e , fconst)
+    loss_time = @elapsed sample_loss = loss_train(species_models, dist, e , fconst)
     println("Time for computing the loss of a a batch: ", loss_time, " seconds")
     @test mean(sample_loss) > 0f0 
 

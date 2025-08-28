@@ -20,10 +20,11 @@ distance layer to map gradients into Cartesian forces.
 - `Float32`: Total loss combining energy and force terms.
 """
 function loss(model, x, y; λ::Float32=1.0f0 , forces::Bool = true)
-
+    one_sample = false
     # Compute the energy contribution
     y_energy = extract_energies(y)
     distances = distance_layer(x)
+ 
 
     # --- Energy prediction + loss ---
     e_pred = dispatch_train(distances, model)
@@ -33,8 +34,9 @@ function loss(model, x, y; λ::Float32=1.0f0 , forces::Bool = true)
     #if forces compute the forces contribution
     if forces 
 
-        f = extract_forces(y_train ; ndims = 2)
-        f_matrix = distance_derivatives(x_train)
+        f =  extract_forces(y)
+        f_matrix = distance_derivatives(x)
+      
 
         f_loss = mean(force_loss(model, distances,  f , f_matrix))
 
@@ -112,33 +114,40 @@ Compute mean squared error (MSE) between predicted and reference forces for a si
 - `Float32`: MSE loss for this input.
 """
 function force_loss(model, x::AbstractVector,  f , f_matrix)
+
     d_matrix = calculate_force(x , model)
+    n_atoms = size(x , 1)
 
-    predicted_forces = reduce(hcat, (d_matrix[i] * f_matrix[i, :, :] for i in 1:size(d_matrix, 1)))
+    predicted_forces = zeros(Float32 , n_atoms , 3)
+    for i in 1:n_atoms
 
+        predicted_forces[i , :] =  d_matrix[i] * f_matrix[i, :, :] 
+    
+    end
 
-    return mean((predicted_forces .- f') .^2)
+    return mean((predicted_forces .- f) .^2)
 end
 
 """
-    force_loss(model, X::AbstractMatrix, F::AbstractMatrix) -> Vector{Float32}
+    force_loss(model, X::AbstractMatrix, F::Array{Float32, 3}, F_matrix::Array{Float32, 4}) -> Vector{Float32}
 
 Compute force losses for a batch of inputs.
 
 # Arguments
 - `model::Function`: Callable model.
 - `X::AbstractMatrix`: Batch of inputs (rows = examples).
-- `F::AbstractMatrix`: Corresponding reference forces.
+- `F::Array{Float32, 3}`: Corresponding reference forces.
+- `F:matrix::Array{Float32, 4}`: batch of the first part of the force derivatives matrices.
 
 # Returns
 - `Vector{Float32}`: Force loss for each example in the batch.
 """
-function force_loss(model, X::Matrix{G1Input}, F::AbstractMatrix , F_matrix)
+function force_loss(model, X::Matrix{G1Input}, F::Array{Float32, 3}, F_matrix::Array{Float32, 4})
     # Map each example in the batch to its force loss
- 
+    
     losses = map(1:size(X, 1)) do i
 
-      force_loss(model, X[i , :] , F[i , :] , F_matrix[i , : , : ,:])
+      force_loss(model, X[i , :] , F[i , : , :] , F_matrix[i , : , : , :])
 
     end
 

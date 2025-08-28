@@ -93,9 +93,9 @@ function train_model!(
 
     # Precompute validation targets
     e_v = extract_energies(y_val)
-    f_v = extract_forces(y_val ; ndims = 2)
+    f_v = extract_forces(y_val )
     e_t = extract_energies(y_train)
-    f_t = extract_forces(y_train ; ndims = 2)
+    f_t = extract_forces(y_train )
 
     dist_train = distance_layer(x_train ; lattice = lattice )
     dist_val = distance_layer(x_val ; lattice = lattice)
@@ -126,7 +126,7 @@ function train_model!(
     
 
         e = e_t[batch]
-        f = f_t[batch , :]
+        f = f_t[batch , : , :]
             
 
         fconst = forces ? force_loss(model, xb, f , x_der) : 0f0

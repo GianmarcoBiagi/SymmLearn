@@ -367,7 +367,7 @@ function extract_forces(y::Vector{Sample}; ndims::Int=3)
 
         for i in 1:n_atoms
 
-            forces[b , i , :] = y[b].forces[1+3(i-1) : 3i]
+            forces[b , i , :] = y[b].forces[i , 1:3]
         end
     end
 

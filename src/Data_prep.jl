@@ -163,7 +163,7 @@ function prepare_nn_data(dataset::Array{Float32,3},
 
 
     all_structures = Vector{Vector{AtomInput}}(undef, num_samples)
-    forces = Array{Float32}(undef, num_samples, num_atoms * 3)
+    forces = Array{Float32}(undef, num_samples, num_atoms , 3)
 
     for i in 1:num_samples
         current_structure = dataset[:, :, i]
@@ -173,7 +173,7 @@ function prepare_nn_data(dataset::Array{Float32,3},
             sp = species_idx[species_order[j]]     # int index
             feats = @view current_structure[1:3, j] # positions as features
             atoms[j] = AtomInput(sp, feats)
-            forces[i, (1+(j-1)*3):(3*j)] = current_structure[4:6, j]
+            forces[i, j , 1:3] = current_structure[4:6, j]
         end
 
         all_structures[i] = atoms
@@ -247,7 +247,6 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
     e_train .= (e_train .- e_mean) ./ e_std
     e_val   .= (e_val .- e_mean) ./ e_std
     e_test  .= (e_test .- e_mean) ./ e_std
-
 
 
     ##### --- Repack as Sample structs --- #####

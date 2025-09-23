@@ -4,75 +4,84 @@ using Enzyme
 
 
 """
-    train_model!(model, x_train, y_train, x_val, y_val, loss_function; 
-                 initial_lr=0.01f0, min_lr=1e-5, decay_factor=0.5, patience=25, 
-                 epochs=3000, batch_size=32, verbose=true, forces=true)
+    train_model!(model, x_train, y_train, x_val, y_val, 
+                 λ=1.0f0; forces=true, initial_lr=0.01, min_lr=1e-6, decay_factor=0.1, 
+                 patience=50, epochs=1000, batch_size=32, verbose=false, lattice=nothing)
 
-Trains a neural network model to predict total energies (and optionally forces) of atomic structures
-using mini-batch gradient descent with adaptive learning rate and early stopping.
+Train a neural network model to predict total energies (and optionally forces) 
+for atomic structures using mini-batch gradient descent, adaptive learning rate, 
+and early stopping.
 
 # Arguments
 - `model::Flux.Chain`  
-  Neural network model to train. Can combine multiple branches for different atom types.
+  Neural network to train. Can combine multiple branches for different atomic species.
 
 - `x_train::Any`  
-  Training dataset. Each entry is a tuple of atomic features.
+  Training atomic structures, either batched or compatible with `distance_layer`.
 
-- `y_train::Vector{Float32}`  
-  Ground truth energies (and optionally forces) for the training set.
+- `y_train::Vector{Sample}`  
+  Ground-truth labels containing `.energy` and `.forces` for training.
 
 - `x_val::Any`  
-  Validation dataset, same format as `x_train`.
+  Validation atomic structures, same format as `x_train`.
 
-- `y_val::Vector{Float32}`  
-  Ground truth energies (and optionally forces) for the validation set.
+- `y_val::Vector{Sample}`  
+  Ground-truth labels for validation.
 
-- `λ::Float32=10.0`  
-  Relative weight given to the force loss (default for energy is 1).
+- `λ::Float32` (default = 1.0)  
+  Weight applied to the force loss relative to the energy loss.
 
-- `initial_lr::Float32=0.01`  
-  Initial learning rate for the `Adam` optimizer.
+- `forces::Bool` (default = true)  
+  If true, include force loss in addition to energy loss.
 
-- `min_lr::Float32=1e-5`  
-  Minimum learning rate. Training will stop decaying when this is reached.
+- `initial_lr::Float32` (default = 0.01)  
+  Initial learning rate for the Adam optimizer.
 
-- `decay_factor::Float32=0.5`  
-  Factor to multiply the learning rate by when validation loss plateaus.
+- `min_lr::Float32` (default = 1e-6)  
+  Minimum allowed learning rate; training stops decaying when reached.
 
-- `patience::Int=25`  
-  Number of epochs without improvement before decaying the learning rate.
+- `decay_factor::Float32` (default = 0.1)  
+  Factor by which to multiply the learning rate if validation loss plateaus.
 
-- `epochs::Int=3000`  
+- `patience::Int` (default = 50)  
+  Number of epochs without improvement before reducing the learning rate.
+
+- `epochs::Int` (default = 1000)  
   Maximum number of training epochs.
 
-- `batch_size::Int=32`  
+- `batch_size::Int` (default = 32)  
   Number of structures per mini-batch.
 
-- `verbose::Bool=true`  
-  If true, prints training progress, learning rate changes, and final results.
+- `verbose::Bool` (default = false)  
+  If true, prints progress, learning rate changes, and final results.
 
-- `forces::Bool=true`  
-  Whether to include force loss in addition to energy loss.
-
-- `lattice::Union{Nothing, Matrix{Float32}}=nothing`  
-  If the distances must be computed using pbs pass the lattice as an input.
+- `lattice::Union{Nothing, Matrix{Float32}}` (default = nothing)  
+  Optional 3×3 lattice matrix if distances should be computed under PBC.
 
 # Returns
-
 - `best_model::Flux.Chain`  
   Model achieving the lowest validation loss during training.
 
 - `loss_tr::Vector{Float32}`  
-  Training loss per epoch (length equals number of epochs run).
+  Training loss per epoch.
 
 - `loss_val::Vector{Float32}`  
-  Validation loss per epoch (length equals number of epochs run).
+  Validation loss per epoch.
+
+# Description
+1. Precomputes pairwise distances (`distance_layer`) and derivatives (`distance_derivatives`) for both training and validation sets.
+2. Performs mini-batch gradient descent using `Enzyme.gradient` and `Flux.update!`.
+3. Optionally computes forces in addition to energies in the loss function.
+4. Applies adaptive learning rate: decays learning rate if validation loss does not improve for `patience` epochs.
+5. Saves the model achieving the lowest validation loss (`best_model`).
+6. Supports early stopping if the learning rate reaches `min_lr`.
 
 # Notes
-- The learning rate is reduced if validation loss does not improve for `patience` epochs.
-- Early stopping is implicit: the training may stop improving while still running until `epochs`.
-- The best-performing model on the validation set is saved and returned separately.
+- Forces are computed using analytical derivatives of distances and backpropagated through the model.
+- The `λ` parameter balances energy and force contributions in the total loss.
+- Loss values are monitored to prevent NaNs; training will stop if a NaN is detected.
 """
+
 
 
 
@@ -193,24 +202,37 @@ end
 
 
 """
-    maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=0.98)
+    maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
 
-Check if the current validation loss is better than the best recorded loss (by a factor `tol`).
-If yes, update `best_model`, `best_loss`, `best_epoch`, and reset `no_improve_count`.
+Update the record of the best-performing model based on validation loss.
+
+This function checks whether the current validation loss `loss_val` is smaller than `tol * best_loss`.  
+If the condition is met, the current model is considered an improvement:
+- `best_model` is updated via `deepcopy(model)`,
+- `best_loss` is set to `loss_val`,
+- `best_epoch` is updated to the current `epoch`,
+- `no_improve_count` is reset to 0.
+
+If there is no improvement, only `no_improve_count` is incremented by 1.
 
 # Arguments
-- `model`: the current model.
-- `loss_val`: validation loss at the current epoch.
-- `epoch`: current epoch number.
-- `best_model`: current best model (deepcopy will be done if improved).
-- `best_loss`: best validation loss recorded so far.
-- `best_epoch`: epoch number of the best model.
-- `no_improve_count`: counter for epochs without improvement.
-- `tol`: improvement tolerance factor (default: `0.98`).
+- `model`: Current neural network model.
+- `loss_val::Float32`: Validation loss for the current epoch.
+- `epoch::Int`: Current epoch number.
+- `best_model`: Model corresponding to the best observed validation loss.
+- `best_loss::Float32`: Best validation loss recorded so far.
+- `best_epoch::Int`: Epoch number when `best_model` was saved.
+- `no_improve_count::Int`: Number of consecutive epochs without improvement.
+- `tol::Float32=1.0`: Tolerance factor. A new model is considered better if `loss_val < tol * best_loss`.
 
 # Returns
-Updated `(best_model, best_loss, best_epoch, no_improve_count)`.
+Tuple `(best_model, best_loss, best_epoch, no_improve_count)` with updated values.
+
+# Notes
+- Setting `tol < 1.0` allows small tolerance before updating the best model.
+- This function is useful for implementing early stopping and adaptive learning rate strategies in training loops.
 """
+
 function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
     if loss_val < best_loss * tol
         return deepcopy(model), loss_val, epoch, 0
@@ -221,24 +243,36 @@ end
 
 
 """
-    maybe_decay_lr!(opt::Flux.Optimise.Adam, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
+    maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
 
-Decay the learning rate of the Adam optimizer in place after `patience` epochs without improvement.
-Preserves optimizer state (momenta).
+Check whether the learning rate should be decayed based on validation performance.
+
+If the number of consecutive epochs without improvement (`no_improve_count`) reaches `patience`,
+the learning rate is multiplied by `decay_factor`, but not below `min_lr`. The optimizer state
+is updated in place to preserve momentum terms.
 
 # Arguments
-- `opt`: Adam optimizer (with internal state).
-- `current_lr`: current learning rate (Float).
-- `no_improve_count`: epochs without improvement.
-- `patience`: patience threshold before decaying LR.
-- `decay_factor`: multiplicative factor to reduce LR.
-- `min_lr`: minimum allowed learning rate.
-- `epoch`: current epoch.
-- `verbose`: print info if true.
+- `opt`: Optimizer (e.g., `Flux.Optimise.Adam`) whose learning rate will be modified.
+- `current_lr::Float32`: Current learning rate.
+- `no_improve_count::Int`: Number of consecutive epochs without improvement.
+- `patience::Int`: Number of epochs to wait before decaying LR.
+- `decay_factor::Float32`: Factor to multiply learning rate when decaying.
+- `min_lr::Float32`: Minimum allowed learning rate.
+- `epoch::Int`: Current epoch number.
+- `verbose::Bool=false`: Print information when learning rate is decayed.
 
 # Returns
-Updated `(opt, current_lr, no_improve_count, stop_training::Bool)`.
+Tuple `(opt, current_lr, no_improve_count, stop_training::Bool)`:
+- `opt`: Updated optimizer with new learning rate if decayed.
+- `current_lr`: Updated learning rate.
+- `no_improve_count`: Reset to 0 if LR was decayed, else unchanged.
+- `stop_training::Bool`: True if `current_lr` reached `min_lr`, signaling training should stop.
+
+# Notes
+- This function allows adaptive learning rate schedules without restarting training.
+- The optimizer’s momentum buffers remain intact.
 """
+
 function maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
     if no_improve_count >= patience
         new_lr = max(current_lr * decay_factor, min_lr)
@@ -257,8 +291,22 @@ end
 """
     update_lr!(opt, new_lr)
 
-Update learning rate `eta` for all Adam leaves inside the optimizer state tree.
+Recursively update the learning rate `eta` for all Adam optimizer instances
+contained within a possibly nested optimizer structure.
+
+# Arguments
+- `opt`: Optimizer or optimizer tree (e.g., `OptimiserChain`) potentially containing multiple Adam leaves.
+- `new_lr::Float32`: New learning rate to assign.
+
+# Returns
+- `opt`: The same optimizer object with updated learning rates.
+
+# Notes
+- Only Adam optimizers (`Flux.Optimise.Adam`) are modified.
+- Other optimizer types or wrappers are left unchanged.
+- This function modifies the optimizer in-place.
 """
+
 function update_lr!(opt, new_lr)
     for leaf in opt
         for (k, v) in pairs(leaf)
@@ -274,17 +322,21 @@ end
 """
     batch_indices(n::Int, batchsize::Int) -> Vector{Vector{Int}}
 
-Generates shuffled mini-batch indices for a dataset.
+Generate mini-batch indices for stochastic gradient descent.
 
 # Arguments
 - `n::Int`: Total number of samples in the dataset.
-- `batchsize::Int`: Desired size of each mini-batch.
+- `batchsize::Int`: Size of each mini-batch.
 
 # Returns
-- `Vector{Vector{Int}}`: A vector of vectors, where each subvector contains 
-  the indices of the samples belonging to a mini-batch.  
-  The indices are shuffled before the dataset is split.
+- `Vector{Vector{Int}}`: Shuffled list of index vectors, each representing a mini-batch.  
+  The last batch may contain fewer than `batchsize` elements if `n` is not divisible by `batchsize`.
+
+# Notes
+- The indices are shuffled randomly each call to ensure stochasticity.
+- Useful for iterating over training data in `train_model!`.
 """
+
 
 
 function batch_indices(n, batchsize)

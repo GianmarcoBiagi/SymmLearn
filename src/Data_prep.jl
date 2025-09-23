@@ -1,14 +1,33 @@
 using ExtXYZ
+"""
+    Sample(energy::Float32, forces::Array{Float32,2})
+
+Container for target data of one atomic configuration.
+
+# Fields
+- `energy::Float32`: Total energy of the configuration.
+- `forces::Array{Float32,2}`: Forces acting on the atoms, shape (num_atoms, 3).
+"""
+
+struct Sample
+    energy::Float32
+    forces::Array{Float32,2}
+    
+end
+
+function Base.show(io::IO, target::Sample)
+
+    print(io, "Energy = $(target.energy), Forces = $(target.forces))")
+end
 
 """
-    AtomInput(species::Int, features::AbstractVector)
+    AtomInput(species::Int, coord::AbstractVector)
 
 Container for one atom in a structure.
 - `species`: integer index in 1..K identifying the species.
-- `coord`: atomic coordinates.
-
-
+- `coord`: atomic coordinates as a vector.
 """
+
 struct AtomInput{T<:AbstractVector}
     species::Int
     coord::T
@@ -24,14 +43,13 @@ function Base.show(io::IO, atom::AtomInput)
 end
 
 """
-    G1Input(species::Int, features::AbstractVector)
+    G1Input(species::Int, dist::AbstractMatrix)
 
 Container for one atom in a structure.
 - `species`: integer index in 1..K identifying the species.
-- `distances`: distances from the atom N and the other N-1 atoms
-
-
+- `dist`: matrix of distances between the atom and the others.
 """
+
 struct G1Input{T<:AbstractMatrix}
     species::Int
     dist::T
@@ -51,28 +69,22 @@ end
     extract_data(path::String)
 
 ### Description:
-This function extracts key information from a dataset of atomic configurations stored in a file ina xyz format . It reads the frames (or configurations) using ExtXYZ, and for each configuration, it extracts:
-- The number of atoms
-- The unique species of atoms
-- The positions and forces acting on each atom
-- The cell matrix (i.e., the box or lattice dimensions)
-- The total energy of the configuration
-
-The function returns this data in a structured format for further analysis.
+Extracts structural and energetic information from atomic configurations in `.xyz` format using `ExtXYZ`.
 
 ### Arguments:
-- `path::String`: The path to the file containing the frame data. The file should contain the necessary details about multiple configurations, including atomic positions, species, forces, and energy.
+- `path::String`: Path to the file containing the data.
 
 ### Returns:
-A tuple containing the following elements:
-1. `atoms_in_a_cell::Int`: The number of atoms in a single unit cell (assumed to be the same in all the frames).
-2. `species::Vector{String}`: A vector containing the species (elements) present in the system.
-3. `uniqe_species::Vector{String}`: A vector containing the unique species (elements) present in the system.
-4. `all_cells::Array{Float64, 3}`: A 3D array containing the cell matrices (dimensions) for each configuration.
-5. `dataset::Array{Float32, 3}`: A 3D array with the following data for each configuration:
-   - Rows 1-3: Atomic positions (x, y, z)
-   - Rows 4-6: Forces acting on atoms (fx, fy, fz)
-6. `all_energies::Vector{Float64}`: A vector containing the total energy for each configuration.
+A tuple containing:
+1. `atoms_in_a_cell::Int`: Number of atoms in one cell (assumed constant across frames).
+2. `species::Vector{String}`: Species of atoms in the first frame.
+3. `unique_species::Vector{String}`: Unique species present in the system.
+4. `all_cells::Vector{Matrix{Float32}}`: List of cell matrices for each configuration.
+5. `dataset::Array{Float32, 3}`: 3D array with data per configuration:
+   - Rows 1–3: Atomic positions (x, y, z).
+   - Rows 4–6: Forces (fx, fy, fz).
+6. `all_energies::Vector{Float32}`: Energies for each configuration.
+
 
 ### Functionality:
 1. **Reading the data**: The function first reads the data from the provided path using `read_frames(path)`.
@@ -136,22 +148,25 @@ end
 
 """
     prepare_nn_data(dataset::Array{Float32,3},
-                    species_order::Vector{String})
+                    species_order::Vector{String},
+                    unique_species::Vector{String})
 
-Convert a dataset of positions+forces into atom-wise inputs for the NN.
+Convert a dataset of atomic positions and forces into atom-wise inputs for a neural network.
 
 # Arguments
 - `dataset`: Array of shape (6, num_atoms, num_samples).
-- `species_order`: Vector of species strings, length = num_atoms.
+- `species_order`: Vector of species strings, length = num_atoms, defining atom order.
+- `unique_species`: Vector of unique species strings, used to build the mapping.
 
 # Returns
 - `all_structures::Vector{Vector{AtomInput}}`:
-    Each element is a structure (vector of atoms).
-- `forces::Array{Float32,2}`:
-    Shape (num_samples, num_atoms*3), flattened atomic forces.
+    Each element is a structure represented as a vector of atoms.
+- `forces::Array{Float32,3}`:
+    Shape (num_samples, num_atoms, 3), atomic forces for each sample.
 - `species_idx::Dict{String,Int}`:
-    Mapping from species name to index, consistent across atoms.
+    Mapping from species name to integer index, consistent across atoms.
 """
+
 function prepare_nn_data(dataset::Array{Float32,3},
                          species_order::Vector{String},
                          unique_species::Vector{String})
@@ -184,50 +199,35 @@ end
 
 
 
-
-
-
 """
-    data_preprocess(input_data, target; split=[0.6, 0.2, 0.2])
+    data_preprocess(input_data, energies, forces; split=[0.6, 0.2, 0.2])
 
-Preprocesses input features and target data for neural network training. Assumes each structure's
-input is flattened as a row vector of length `3 * n_atoms`. The dataset is split, normalized, 
-and target data repackaged into `Sample` structs containing normalized energy and force vectors.
+Preprocess input features and target data for neural network training. The dataset is split,
+energies normalized, forces rescaled consistently with energies, and targets repackaged
+into `Sample` structs.
 
 # Arguments
-- `input_data::Array{<:Real, 2}`: Input features with shape `(N_structures, 3 * n_atoms)`.
-- `target::Vector{Dict}`: Vector of dictionaries, each with keys:
-    - `:energy` (`Float32`): Total system energy.
-    - `:forces` (`Vector{Float32}`): Flattened forces vector of length `3 * n_atoms`.
-- `split::Vector{Float64}` (optional): Proportions for train/validation/test splits, summing to 1 (default `[0.6, 0.2, 0.2]`).
+- `input_data::Array{<:Real,2}`: Input features of shape `(N_structures, 3 * n_atoms)`.
+- `energies::Vector{Float32}`: Total system energies for each structure.
+- `forces::Array{Float32,3}`: Atomic forces of shape `(N_structures, n_atoms, 3)`.
+- `split::Vector{Float64}` (optional): Fractions for train/validation/test splits,
+  must sum to 1. Default `[0.6, 0.2, 0.2]`.
 
 # Returns
 A tuple containing:
-- `(x_train, y_train)`: Training inputs and targets (`Vector{Sample}`).
-- `(x_val, y_val)`: Validation inputs and targets.
-- `(x_test, y_test)`: Test inputs and targets.
-- `energy_mean, energy_std`: Mean and std used for energy normalization.
-- `forces_mean, forces_std`: Mean and std used for force normalization.
+- `x_train::Array, y_train::Vector{Sample}`: Training inputs and targets.
+- `x_val::Array, y_val::Vector{Sample}`: Validation inputs and targets.
+- `x_test::Array, y_test::Vector{Sample}`: Test inputs and targets.
+- `(energy_mean::Float32, energy_std::Float32)`: Statistics used for energy normalization.
 
 # Notes
-- Inputs must be flattened (shape `(N, 3 * n_atoms)`).
-- Energies are normalized by single Z-score normalization.
-- Forces are normalized feature-wise by Z-score normalization.
+- Energies are normalized by Z-score (zero mean, unit variance).
+- Forces are scaled by the same energy standard deviation (`energy_std`).
 - Targets are returned as `Sample` structs with:
-    - `.energy`: normalized scalar energy
-    - `.forces`: normalized flattened force vector (`Vector{Float32}`, length `3 * n_atoms`)
+    - `.energy`: normalized scalar energy.
+    - `.forces`: rescaled force matrix `(n_atoms, 3)`.
 """
 
-struct Sample
-    energy::Float32
-    forces::Array{Float32,2}
-    
-end
-
-function Base.show(io::IO, target::Sample)
-
-    print(io, "Energy = $(target.energy), Forces = $(target.forces))")
-end
 
 
 
@@ -247,6 +247,9 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
     e_train .= (e_train .- e_mean) ./ e_std
     e_val   .= (e_val .- e_mean) ./ e_std
     e_test  .= (e_test .- e_mean) ./ e_std
+    f_train .= f_train ./ e_std
+    f_test .= f_test ./ e_std
+    f_val .= f_val ./ e_std
 
 
     ##### --- Repack as Sample structs --- #####
@@ -316,40 +319,35 @@ end
 
 
 """
-    xyz_to_nn_input(file_path::String) -> (Train, Val, Test_data, energy_mean, energy_std, forces_mean, forces_std, species, all_cells)
+    xyz_to_nn_input(file_path::String)
 
-Processes an XYZ file containing atomic structures and energies to generate datasets formatted for neural network training.
+Process an XYZ file containing atomic structures and energies to generate datasets for neural network training.
 
 # Arguments
-- `file_path::String`:  
-  Path to the XYZ file that includes atomic coordinates, species information, lattice cells, and energy values.
+- `file_path::String`: Path to the XYZ file containing coordinates, species, lattice cells, and energy values.
 
 # Returns
-- `Train`: Training dataset consisting of input-output pairs (positions, energies, forces), typically normalized.
-- `Val`: Validation dataset for tuning model hyperparameters.
-- `Test_data`: Test dataset used for final evaluation.
-- `energy_mean::Float64`: Mean of the energy values across the dataset, used for normalization.
-- `energy_std::Float64`: Standard deviation of the energy values, used for normalization.
-- `forces_mean::Float64`: Mean of the forces values, used for normalization.
-- `forces_std::Float64`: Standard deviation of the forces values, used for normalization.
-- `species::Vector{String}`: List of atomic species present in the dataset; useful as input to model creation functions.
-- `all_cells`: List of lattice cell information corresponding to each sample in the dataset.
+A tuple with:
+1. `x_train::Array, y_train::Vector{Sample}`: Training inputs and targets.
+2. `x_val::Array, y_val::Vector{Sample}`: Validation inputs and targets.
+3. `x_test::Array, y_test::Vector{Sample}`: Test inputs and targets.
+4. `(energy_mean::Float32, energy_std::Float32)`: Energy normalization statistics.
+5. `unique_species::Vector{String}`: Unique atomic species in the dataset.
+6. `species_idx::Dict{String,Int}`: Mapping from species to integer indices.
+7. `all_cells::Vector{Matrix{Float32}}`: Lattice cell matrices for each configuration.
 
 # Description
-This function performs the following steps:  
-1. Extracts atomic structures, species, lattice cells, and energy values from the specified XYZ file using `extract_data`.  
-2. Generates neural network input arrays for atomic positions and forces using `prepare_nn_data`.  
-3. Normalizes energies and forces and splits the data into training, validation, and test sets through `data_preprocess`.  
-The outputs are ready-to-use datasets and normalization parameters for machine learning workflows involving atomic simulations.
+Steps performed:
+1. Extract structures, species, cells, and energies with `extract_data`.
+2. Convert positions and forces into atom-wise inputs with `prepare_nn_data`.
+3. Normalize energies and rescale forces consistently, then split into train/val/test sets with `data_preprocess`.
 
 # Dependencies
-- `extract_data(file_path)`: Parses the XYZ file to obtain raw atomic and energetic data.  
-- `prepare_nn_data(dataset, num_atoms)`: Converts raw atomic data into flattened arrays suitable for NN input.  
-- `data_preprocess(nn_input_dataset, all_energies, all_forces)`: Normalizes data and splits it into subsets.
-
-
-
+- `extract_data(file_path)`: Parses raw atomic data from the XYZ file.  
+- `prepare_nn_data(dataset, species, unique_species)`: Builds NN inputs and forces arrays.  
+- `data_preprocess(nn_input_dataset, all_energies, all_forces)`: Normalizes and splits the dataset.  
 """
+
 
 function xyz_to_nn_input(file_path::String)
 

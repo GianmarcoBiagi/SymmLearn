@@ -1,19 +1,17 @@
 using LinearAlgebra
 
 """
-    element_charge
+    element_to_charge :: Dict{String, Int}
 
-A dictionary that maps chemical element symbols (as String`s) to their respective atomic numbers (as Int`s).
-This dictionary is used to retrieve the atomic number of an element by its symbol, which is typically needed when processing atomic datasets.
+Dictionary mapping chemical element symbols (as `String`s) to their atomic numbers (as `Int`s).  
+This is used to assign a charge or atomic number to an element for neural network input preprocessing.
 
-### Structure
-The dictionary contains mappings for a range of chemical elements from Hydrogen (H) to Oganesson (Og), with each element symbol as the key and its atomic number as the value.
-
-### Example Usage
+# Example
 ```julia
-# Example of retrieving the atomic number of Carbon (C)
-carbon_atomic_number = element_charge["C"]
-println("The atomic number of Carbon is: ", carbon_atomic_number)
+# Retrieve atomic number of Carbon
+carbon_atomic_number = element_to_charge["C"]
+println(carbon_atomic_number)  # Output: 6
+
 """ 
 
 element_to_charge = Dict(
@@ -137,42 +135,43 @@ element_to_charge = Dict(
     "Og" => 118,
 )
 """
-    charge_to_element = Dict(v => k for (k, v) in element_charge)
+    charge_to_element :: Dict{Int, String}
 
-Creates a dictionary that maps atomic charges to their corresponding element names.
-
-# Arguments
-- `element_charge::Dict{String, Float32}`: A dictionary where keys are element names (e.g., `"Cs"`, `"Pb"`, `"I"`) and values are their respective atomic charges.
-
-# Returns
-- `Dict{Float32, String}`: A dictionary where keys are atomic charges and values are element names.
+Inverse mapping of `element_to_charge`. Maps atomic numbers (charges) to their element symbols.
 
 # Example
 ```julia
-element_charge = Dict("Cs" => 55.0, "Pb" => 85.0, "I" => 53.0)
+charge_to_element[6]  # Returns "C"
+charge_to_element[79] # Returns "Au"
 
-charge_to_element = Dict(v => k for (k, v) in element_charge)
-
-println(charge_to_element)  
-# Output: Dict(55.0 => "Cs", 85.0 => "Pb", 53.0 => "I")
 """
 
 charge_to_element = Dict(v => k for (k, v) in element_to_charge)
 
 """
-    distance_atoms_pbc(atom1, atom2, lattice)
+    d_pbc(atom1, atom2, lattice; coords=:cartesian, return_image=false)
 
-Compute the minimum-image distance between two atoms under periodic boundary conditions (PBC),
-valid for any (possibly non-orthogonal) lattice.
+Compute the minimum-image distance between two atoms under periodic boundary conditions (PBC).
 
 # Arguments
-- `atom1::Vector{Float32}`: Cartesian coordinates of the first atom
-- `atom2::Vector{Float32}`: Cartesian coordinates of the second atom
-- `lattice::Matrix{Float32}`: 3x3 lattice matrix (columns are lattice vectors)
+- `atom1::AbstractVector{<:Real}`: Coordinates of the first atom.
+- `atom2::AbstractVector{<:Real}`: Coordinates of the second atom.
+- `lattice::AbstractMatrix{<:Real}`: 3×3 lattice matrix where columns are lattice vectors.
+- `coords::Symbol`: Either `:cartesian` (default) or `:fractional` to specify the input coordinate type.
+- `return_image::Bool`: If true, also return the minimum-image vector in Cartesian coordinates and the integer lattice translation vector applied.
 
 # Returns
-- `d::Float32`: Minimum distance considering PBC
+- `d::Float32`: Minimum distance under PBC.
+- Optionally `(d, rvec, n)` if `return_image=true`:
+  - `rvec::Vector{Float32}`: Cartesian vector along the minimum-image direction.
+  - `n::Vector{Int}`: Integer lattice translation indices applied to obtain the minimum image.
+
+# Notes
+- Works for both orthogonal and non-orthogonal lattices.
+- Implements the minimum-image convention in fractional coordinates.
+- Supports input coordinates in either Cartesian or fractional form.
 """
+
 function d_pbc(atom1::AbstractVector{<:Real},
                         atom2::AbstractVector{<:Real},
                         lattice::AbstractMatrix{<:Real};
@@ -223,34 +222,29 @@ end
 
 
 """
-    fc(Rij::T, Rc::T) :: T where T
+    fc(Rij, Rc)
 
-Computes a smooth cutoff function for distances between particles. The function returns 0 if the distance `Rij` exceeds the cutoff `Rc`. 
-If `Rij` is less than `Rc`, the function computes a smooth transition based on the ratio between `Rij` and `Rc`, using an exponential function. The cutoff is made smoother using a small tolerance (`ε`) to handle edge cases where the value becomes too small.
+Compute a smooth cutoff function for distances between particles.
 
-### Arguments
-- `Rij::T`: The distance between two particles (numeric type `T`, e.g., `Float32` or `Float32`).
-- `Rc::T`: The cutoff distance, beyond which the function returns 0.
+# Arguments
+- `Rij::Float32`: Distance between two particles.
+- `Rc::Float32`: Cutoff distance. Returns 0 if `Rij >= Rc`.
 
-### Returns
-- A value of type `T`, which is the result of the cutoff function based on the given `Rij` and `Rc`.
+# Returns
+- `Float32`: Value of the smooth cutoff function. 
 
-### Behavior
-- If `Rij >= Rc`, the function returns 0.
-- If `Rij < Rc`, the function applies a smooth exponential transition, with the transition becoming increasingly sharp as `Rij` approaches `Rc`.
+# Behavior
+- Returns 0 if `Rij >= Rc`.
+- For `Rij < Rc`, computes a smooth exponential decay using:
+    fc(Rij) = exp(1 - 1 / (1 - (Rij / Rc)^2))
+A small tolerance (`eps(Float32)`) is used to avoid numerical issues when `Rij` approaches `Rc`.
 
-### Example
-```julia
-Rij = 1.0
-Rc = 2.5
-result = fc(Rij, Rc)
-println(result)  # This will output the result of the cutoff function for Rij=1.0 and Rc=2.5.
 
 """
 
+
 function fc(
-    #Rij::T, Rc::T
-    Rij, Rc
+    Rij::Float32, Rc::Float32
     ) 
     if Rij >= Rc
         return zero(Float32)
@@ -305,12 +299,16 @@ end
 Return the energies of a batch of samples.
 
 # Arguments
-- `X::Vector{Sample}`: a collection of samples.
+- `X::Vector{Sample}`: A collection of `Sample` objects, each containing an energy vector.
 
 # Returns
-- `energies_batch::RowVector{Float32}`: row vector of size `(1, n_batch)`,  
-  where each column contains the energy of one sample.
+- `energies_batch::Vector{Float32}`: 1D vector of length `n_batch`, where each element contains the first component of the energy of a sample.
+
+# Notes
+- The function extracts only the first element of each sample's `energy` field.
+- Output is always of type `Float32`.
 """
+
 function extract_energies(X::Vector{Sample})
     n_batch = size(X, 1)
 
@@ -324,37 +322,31 @@ end
 
 
 """
-    extract_forces(y; ndims::Int=3)
+    extract_forces(y::Vector{Sample}; ndims::Int=3)
 
-Extracts and reshapes atomic force vectors from a batch of data.
+Extract and reshape atomic force vectors from a batch of samples.
 
 # Arguments
-- `y`: A collection (e.g., vector or array) of objects, where each element 
-  contains a field `forces` representing flattened atomic force components 
-  as a 1D array of length `3 * n_atoms`.
-- `ndims::Int=3`: Desired dimensionality of the returned tensor.  
-  - `3`: Returns a 3D tensor `(n_batch, n_atoms, 3)`  
-  - `2`: Returns a 2D matrix `(n_batch, n_atoms * 3)`  
-  - `1`: Returns a 1D vector `(n_batch * n_atoms * 3)`  
+- `y::Vector{Sample}`: A batch of `Sample` objects, each containing a `forces` field as a 2D array of shape `(n_atoms, 3)`.
+- `ndims::Int=3`: Desired dimensionality of the returned array:
+  - `3`: Returns a 3D array `(n_batch, n_atoms, 3)`  
+  - `2`: Returns a 2D array `(n_batch, n_atoms*3)`  
+  - `1`: Returns a 1D array `(n_batch*n_atoms*3)`
 
 # Returns
-- If `ndims == 3`: `Array{Float32, 3}` of shape `(n_batch, n_atoms, 3)`,  
-  where `forces[b, i, :]` contains the 3D force vector for atom `i` in batch `b`.  
-- If `ndims == 2`: `Array{Float32, 2}` of shape `(n_batch, n_atoms*3)`.  
-- If `ndims == 1`: `Array{Float32, 1}` of shape `(n_batch*n_atoms*3)`.  
+- Array of `Float32` forces in the requested shape according to `ndims`.
 
-# Errors
-- Prints an error message if `ndims` is not 1, 2, or 3.  
+# Behavior
+- If `ndims == 3`, output shape is `(n_batch, n_atoms, 3)`.
+- If `ndims == 2`, output shape is `(n_batch, n_atoms*3)`.
+- If `ndims == 1`, output shape is `(n_batch*n_atoms*3)`.
+- Prints an error message if `ndims` is not 1, 2, or 3.
 
-# Example
-```julia
-# Suppose y is a vector of structs, each with a field `.forces` containing 
-# forces like [fx1, fy1, fz1, fx2, fy2, fz2, ...].
-
-forces3d = extract_forces(y; ndims=3)  # shape: (n_batch, n_atoms, 3)
-forces2d = extract_forces(y; ndims=2)  # shape: (n_batch, n_atoms*3)
-forces1d = extract_forces(y; ndims=1)  # shape: (n_batch*n_atoms*3)
+# Notes
+- Assumes all samples have the same number of atoms.
+- Forces are extracted directly from the `forces` field of each sample.
 """
+
 
 function extract_forces(y::Vector{Sample}; ndims::Int=3)
  

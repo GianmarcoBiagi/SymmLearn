@@ -16,6 +16,8 @@ include("Model.jl")
 include("Loss.jl")
 
 
-export xyz_to_nn_input,create_model,train_model!,dispatch
+export xyz_to_nn_input
+export create_model,train_model!, build_species_models
+export dispatch,predict_forces
 
 end

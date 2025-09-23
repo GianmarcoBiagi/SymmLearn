@@ -1,24 +1,22 @@
 using Enzyme
 
 """
-    loss(model, x, y; λ=0.5f0) -> Float32
+    loss(model, x, y; λ=1.0f0, forces=true) -> Float32
 
-Compute the total training loss as a weighted sum of energy and force errors.  
-This function extracts energies and forces from the reference data `y`,  
-computes predictions using `dispatch_train`, and uses the derivatives of the  
-distance layer to map gradients into Cartesian forces.
+Compute the training loss as mean squared error on energies plus, optionally,
+a weighted force-matching term.
 
 # Arguments
 - `model::Vector{Chain}`: Species-specific neural network models.
 - `x`: Input atomic structure(s).
-- `y`: Reference labels containing energy and forces.
-- `λ::Float32`: Weight applied to the force contribution (default = 1.0).
-- `forces::Bool`: if the loss should be computed taking into account the forces or not ( default = true).
-
+- `y`: Reference labels containing energies and forces.
+- `λ::Float32` (optional): Weight for the force contribution. Default = 1.0.
+- `forces::Bool` (optional): If true, include force loss. If false, only energy loss. Default = true.
 
 # Returns
-- `Float32`: Total loss combining energy and force terms.
+- `Float32`: Total loss (energy-only if `forces=false`, energy + λ·forces otherwise).
 """
+
 function loss(model, x, y; λ::Float32=1.0f0 , forces::Bool = true)
     one_sample = false
     # Compute the energy contribution
@@ -73,7 +71,7 @@ function energy_loss( model, x, y)
     return (e_guess .- y).^2
 end
 
-"""disp
+"""
     calculate_force(model, x::AbstractVector) -> AbstractVector
 
 Compute the negative gradient of the scalar model output w.r.t. input `x`, i.e., the predicted forces.
@@ -101,18 +99,20 @@ end
 
 
 """
-    force_loss(model, x::AbstractVector, f::AbstractVector) -> Float32
+    force_loss(model, x, f, f_matrix) -> Float32
 
-Compute mean squared error (MSE) between predicted and reference forces for a single input.
+Compute the mean squared error (MSE) between predicted and reference forces for one structure.
 
 # Arguments
-- `model::Function`: Callable model.
-- `x::AbstractVector`: Single input structure.
-- `f::AbstractVector`: Reference forces.
+- `model`: Callable neural network model.
+- `x`: Input atomic structure (AbstractVector or per-atom representation).
+- `f`: Reference forces (matrix of shape `(num_atoms, 3)`).
+- `f_matrix`: Distance derivative matrix for mapping gradients to Cartesian forces.
 
 # Returns
-- `Float32`: MSE loss for this input.
+- `Float32`: MSE between predicted and reference forces.
 """
+
 function force_loss(model, x::AbstractVector,  f , f_matrix)
 
     d_matrix = calculate_force(x , model)
@@ -129,19 +129,20 @@ function force_loss(model, x::AbstractVector,  f , f_matrix)
 end
 
 """
-    force_loss(model, X::AbstractMatrix, F::Array{Float32, 3}, F_matrix::Array{Float32, 4}) -> Vector{Float32}
+    force_loss(model, X::Matrix{G1Input}, F::Array{Float32,3}, F_matrix::Array{Float32,4}) -> Vector{Float32}
 
-Compute force losses for a batch of inputs.
+Compute force losses for a batch of atomic structures.
 
 # Arguments
-- `model::Function`: Callable model.
-- `X::AbstractMatrix`: Batch of inputs (rows = examples).
-- `F::Array{Float32, 3}`: Corresponding reference forces.
-- `F:matrix::Array{Float32, 4}`: batch of the first part of the force derivatives matrices.
+- `model`: Callable neural network model.
+- `X::Matrix{G1Input}`: Batch of inputs, one row per structure.
+- `F::Array{Float32,3}`: Reference forces for each structure, shape `(num_samples, num_atoms, 3)`.
+- `F_matrix::Array{Float32,4}`: Force derivative matrices for each structure, shape `(num_samples, num_atoms, 3, 3)`.
 
 # Returns
-- `Vector{Float32}`: Force loss for each example in the batch.
+- `Vector{Float32}`: Force loss for each structure in the batch.
 """
+
 function force_loss(model, X::Matrix{G1Input}, F::Array{Float32, 3}, F_matrix::Array{Float32, 4})
     # Map each example in the batch to its force loss
     
@@ -155,20 +156,21 @@ function force_loss(model, X::Matrix{G1Input}, F::Array{Float32, 3}, F_matrix::A
 end
 
 """
-    loss_train(model, x, y, fconst; λ=0.5f0) -> Float32
+    loss_train(models, x, y, fconst; λ=1.0f0) -> Float32
 
-Compute the combined energy + force loss.
+Compute the combined energy and force loss for training.
 
 # Arguments
-- `model::Function`: Callable model.
-- `x`: Input structure.
-- `y`: Reference energy.
-- `fconst`: Precomputed force term (treated as constant).
-- `λ::Float32`: Weight for the force contribution (default 0.5).
+- `models`: Callable model(s) for energy prediction.
+- `x`: Input structure(s).
+- `y`: Reference energies corresponding to `x`.
+- `fconst`: Precomputed force contributions (treated as constant).
+- `λ::Float32` (optional): Weight for the force contribution. Default = 1.0.
 
 # Returns
-- `Float32`: Total loss combining energy and force term.
+- `Float32`: Total loss combining mean energy loss and weighted mean force term.
 """
+
 function loss_train(models, x, y, fconst; λ::Float32=1.0f0)    
   e_loss = energy_loss( models , x , y)
   return (mean(e_loss) .+ λ .* mean(fconst))

@@ -2,37 +2,27 @@ using Flux
 using Random
 using Statistics
 
-
-
-
 """
-    struct G1Layer
+    G1Layer(W_eta::Vector{Float32}, W_Fs::Vector{Float32}, cutoff::Float32, charge::Float32)
 
-A custom layer structure that contains two sets of weights for neural network connections, as well as additional parameters related to the system.
+Custom neural network layer with weights and system-specific parameters.
 
-#### Fields:
-- `W_eta::AbstractArray`
-  - A weight matrix for the connection "eta" in the neural network layer. This represents the parameters associated with the input feature "eta".
-- `W_Fs::AbstractArray`
-  - A weight matrix for the connection "Fs" in the neural network layer. This represents the parameters associated with the input feature "Fs".
-- `cutoff::Float32`
-  - A scalar value represeing the cutoff radius for interactions within the system.
-- `charge::Float32`
-  - A scalar value representing the atomic charge for the layer.
+# Fields
+- `W_eta::Vector{Float32}`: Weight vector for the "eta" connection.
+- `W_Fs::Vector{Float32}`: Weight vector for the "Fs" connection.
+- `cutoff::Float32`: Cutoff radius for interactions.
+- `charge::Float32`: Atomic charge associated with the layer.
 
-### Example:
+# Example
 ```julia
-# Create a G1Layer object with example data
-W_eta_example = rand(5, 5)  # Example weight matrix for "eta" with 5x5 dimensions
-W_Fs_example = rand(5, 5)   # Example weight matrix for "Fs" with 5x5 dimensions
-cutoff_example = 5.0f0      # Example cutoff radius value
-charge_example = 1.0f0      # Example atomic charge value
+W_eta_example = rand(Float32, 5)
+W_Fs_example  = rand(Float32, 5)
+cutoff_example = 5.0f0
+charge_example = 1.0f0
 
-# Create the G1Layer object
 layer = G1Layer(W_eta_example, W_Fs_example, cutoff_example, charge_example)
-
-# Print the values
 println("Layer created: ", layer)
+
 
 """
 struct G1Layer
@@ -83,43 +73,34 @@ end
 
 
 
-
-
 """
     (layer::G1Layer)(x::AbstractMatrix{Float32}) -> Matrix{Float32}
 
-Applies the `G1Layer` neural network layer to a batch of atomic environments.
+Apply the `G1Layer` to a batch of atomic distances, computing radial symmetry function outputs.
 
-This method computes the response of each neuron (or symmetry function) in the `G1Layer` by summing 
-the contributions from neighboring atoms. Each contribution depends on the distance between atoms, 
-a radial cutoff function, and learned parameters controlling peak position and width. The atomic charge 
-is used as a multiplicative factor.
-
-### Arguments
-- `layer::G1Layer`: The `G1Layer` instance, which includes:
-    - `W_eta::Matrix{Float32}`: Exponential decay weights, shape `(hidden_dim, input_dim)`.
-    - `W_Fs::Matrix{Float32}`: Peak position weights, shape `(hidden_dim, input_dim)`.
-    - `cutoff::Float32`: Cutoff radius for neighbor interaction.
+# Arguments
+- `layer::G1Layer`: Layer instance with fields:
+    - `W_eta::Vector{Float32}`: Width parameters for each symmetry function.
+    - `W_Fs::Vector{Float32}`: Peak positions for each symmetry function.
+    - `cutoff::Float32`: Cutoff radius for neighbor interactions.
     - `charge::Float32`: Atomic charge scaling factor.
-- `x::AbstractMatrix{Float32}`: Input distances of shape `(batch_size, N_neighbors)`, 
-  where each row represents distances of one atom to its neighbors.
+- `x::AbstractMatrix{Float32}`: Distance matrix of shape `(n_batch, n_neighbors)`.
 
-### Returns
-- `output::Matrix{Float32}`: Matrix of shape `(hidden_dim, batch_size)`, containing the 
-  symmetry function outputs for each atom in the batch.
+# Returns
+- `Matrix{Float32}`: Symmetry function outputs, shape `(n_features, n_batch)`,
+  where `n_features = size(layer.W_eta, 1)`.
 
-### Example
+# Example
 ```julia
-layer = G1Layer(1, 5, 2.5f0, 1.0f0)  # 1 input dim, 5 symmetry functions, cutoff 2.5, charge 1.0
-x = rand(Float32, 3, 10)             # Batch of 3 atoms, each with 10 neighbor distances
-output = layer(x)                    # Output shape: (5, 3)
+layer = G1Layer(5, 2.5f0, 1.0f0)  # 5 symmetry functions, cutoff 2.5, charge 1.0
+x = rand(Float32, 3, 10)          # 3 atoms, 10 neighbors each
+output = layer(x)                 # Output shape: (5, 3)
+
 
 """
 
 
-
 function (layer::G1Layer)(x::AbstractMatrix{Float32})
-    # x: (n_batch, n_neighbors)
     n_batch, n_neighbors = size(x)
     n_features = size(layer.W_eta, 1)
 
@@ -400,16 +381,26 @@ end
 
 
 
-
 """
-    build_branch(atom::String, G1_number::Int, R_cutoff::Float32) -> Chain
+    build_branch(atom::String, G1_number::Int, R_cutoff::Float32; depth=2, seed=nothing) -> Chain
 
-Builds a per-species subnetwork consisting of:
-- A `G1Layer` configured with species charge.
-- A single Dense layer with swish activation to output scalar atomic energy.
+Construct a per-species neural network subbranch for atomic energy prediction.
 
-The atomic charge is scaled from `element_to_charge` using a factor of 0.1.
+# Arguments
+- `atom::String`: Atomic species name.
+- `G1_number::Int`: Number of radial G1 symmetry functions.
+- `R_cutoff::Float32`: Cutoff radius for the G1Layer.
+- `depth::Int` (optional): Number of hidden layers. `1` or `2`. Default = 2.
+- `seed::Int` or `nothing` (optional): RNG seed for G1Layer initialization.
+
+# Returns
+- `Chain`: Flux.jl neural network chain consisting of:
+    - `G1Layer` with scaled atomic charge.
+    - LayerNorm layers.
+    - Dense layers with `swish` activation.
+    - Final Dense layer outputs scalar atomic energy.
 """
+
 
 
 
@@ -580,16 +571,28 @@ end
 
 
 """
-    predict_forces(x, model; flat=false)
+    predict_forces(x, model; flat=false) -> Array{Float32}
 
-Compute atomic forces from a trained model given atomic positions.
+Compute predicted atomic forces for a batch of structures using a trained model.
 
 # Arguments
-- `x::AbstractArray`: Batched input positions of shape `(n_batches, n_atoms, 3)`.  
-- `model`: The trained ML model used to predict the potential energy.  
-- `flat::Bool=false`: If `false`, returns forces with shape `(n_batches, n_atoms, 3)`.  
-  If `true`, returns a 1D vector where forces are flattened in the order:
+- `x`: Input atomic structures, either a `Matrix{Vector{AtomInput}}` (batched) or compatible with `distance_layer`.
+- `model`: Species-specific neural network models used for force prediction.
+- `flat::Bool` (optional): If `true`, return forces flattened as a 1D vector;  
+  if `false` (default), return a 3D array `(n_batches, n_atoms, 3)`.
+
+# Returns
+- `Array{Float32}`: Predicted forces for all atoms:
+    - `(n_batches, n_atoms, 3)` if `flat=false`
+    - Flattened 1D array if `flat=true`
+
+# Description
+1. Compute pairwise distances with `distance_layer`.
+2. Compute distance derivatives with `distance_derivatives`.
+3. For each batch, compute force contributions from model gradients.
+4. Optionally flatten the resulting force array.
 """
+
 
 
 

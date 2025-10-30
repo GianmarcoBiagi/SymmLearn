@@ -5,6 +5,7 @@ include("../src/Data_prep.jl")
 include("../src/Utils.jl")
 include("../src/Train.jl")
 include("../src/Model.jl")
+include("../src/Loss.jl")
 
 
 @testset "Model Training Test" begin
@@ -43,7 +44,7 @@ include("../src/Model.jl")
 
     x = x_train[1:3, :]
     y = y_train[1:3]
-    dist = distance_matrix_layer(x ; lattice = lattice)
+    dist = distance_layer(x ; lattice = lattice)
     df_matrix = distance_derivatives(x ; lattice = lattice)
     e = extract_energies(y)
     f = extract_forces(y)

@@ -7,16 +7,16 @@ You can install `SymmLearn` directly from its source repository using Julia's pa
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/yourusername/SymmLearn.jl")
-
+```
 Alternatively, if you have cloned the repository locally, you can use:
-
+```julia
 using Pkg
 Pkg.develop(path="/path/to/SymmLearn")
-
+```
 After installation, you can load the package with:
-
+```julia
 using SymmLearn
-
+```
 
 This project implements a Machine Learning Force Field (MLFF) using Julia and the Flux.jl deep learning framework. The main goal is to predict the total energy of atomic systems based on interatomic distances through a Behler-Parrinello Neural Network approach:
 
@@ -25,6 +25,7 @@ The total energy of the system is obtained by summing the contributions of all a
 
 ![Image of an example Behler-Parrinello Neural Network](BPNN.png)
 
+*An example of the architecture of a II generation Behler-Parrinello neural network*
 
 This architecture is inspired by second-generation neural network potentials, commonly used in materials science and molecular simulations.
 

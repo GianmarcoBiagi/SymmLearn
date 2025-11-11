@@ -6,6 +6,8 @@ using Enzyme
 Compute the training loss as mean squared error on energies plus, optionally,
 a weighted force-matching term.
 
+This is a user-level function; the developer version is `loss_train`.
+
 # Arguments
 - `model::Vector{Chain}`: Species-specific neural network models.
 - `x`: Input atomic structure(s).
@@ -99,19 +101,28 @@ end
 
 
 """
-    force_loss(model, x, f, f_matrix) -> Float32
+    force_loss(model, x::AbstractVector, f, f_matrix) -> Float32
 
-Compute the mean squared error (MSE) between predicted and reference forces for one structure.
+Compute the mean squared error (MSE) between predicted and reference forces for a single atomic structure.
+
+# Description
+This is the **single-structure version** of `force_loss`.  
+It calculates the predicted forces by applying the model to the input representation `x`
+and mapping gradients via `f_matrix`, then compares them to the reference forces `f` using MSE.
 
 # Arguments
 - `model`: Callable neural network model.
-- `x`: Input atomic structure (AbstractVector or per-atom representation).
-- `f`: Reference forces (matrix of shape `(num_atoms, 3)`).
-- `f_matrix`: Distance derivative matrix for mapping gradients to Cartesian forces.
+- `x::AbstractVector`: Input atomic structure or per-atom representation.
+- `f::AbstractMatrix{Float32}`: Reference forces, shape `(num_atoms, 3)`.
+- `f_matrix::AbstractArray{Float32, 3}`: Distance derivative matrix for mapping gradients to Cartesian forces.
 
 # Returns
-- `Float32`: MSE between predicted and reference forces.
+- `Float32`: Mean squared error between predicted and reference forces for the structure.
+
+# See also
+`force_loss(model, X::Matrix{G1Input}, F::Array{Float32,3}, F_matrix::Array{Float32,4})` for the batched version.
 """
+
 
 function force_loss(model, x::AbstractVector,  f , f_matrix)
 
@@ -133,6 +144,12 @@ end
 
 Compute force losses for a batch of atomic structures.
 
+# Description
+This is the **batch version** of `force_loss`.  
+Each row of `X` corresponds to one structure. The function computes the predicted forces
+for each structure using the provided model and derivative matrices, then evaluates
+the mean squared error (MSE) against the reference forces.
+
 # Arguments
 - `model`: Callable neural network model.
 - `X::Matrix{G1Input}`: Batch of inputs, one row per structure.
@@ -141,7 +158,11 @@ Compute force losses for a batch of atomic structures.
 
 # Returns
 - `Vector{Float32}`: Force loss for each structure in the batch.
+
+# See also
+`force_loss(model, x::AbstractVector, f, f_matrix)` for the single-structure version.
 """
+
 
 function force_loss(model, X::Matrix{G1Input}, F::Array{Float32, 3}, F_matrix::Array{Float32, 4})
     # Map each example in the batch to its force loss
@@ -159,6 +180,8 @@ end
     loss_train(models, x, y, fconst; λ=1.0f0) -> Float32
 
 Compute the combined energy and force loss for training.
+
+This is a developer-level function; the public API is `loss`.
 
 # Arguments
 - `models`: Callable model(s) for energy prediction.

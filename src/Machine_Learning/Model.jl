@@ -127,19 +127,26 @@ end
 """
     distance_layer(input::Matrix{Vector{AtomInput}}; lattice=nothing)
 
-Compute the pairwise distances between atoms for each batch in a matrix of batches.
+Compute pairwise distances for a batch of atomic configurations.
 
-If a `lattice` is provided, distances are computed using the **minimum-image convention**
-under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances are used.
+# Description
+This is the **batch version** of `distance_layer`, where each row of the matrix represents 
+a separate configuration of atoms. Distances are computed between every pair of atoms 
+in each configuration. If `lattice` is provided, the **minimum-image convention** under 
+periodic boundary conditions (PBC) is applied. Otherwise, simple Cartesian distances are used.
 
 # Arguments
 - `input::Matrix{Vector{AtomInput}}`: A matrix of batches. Each element is a vector of `AtomInput`
   objects containing `.species::Int` and `.coord::AbstractVector` (3D coordinates at least).
-- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for PBC.
 
 # Returns
 - `Matrix{G1Input}`: Same shape as `input`. Each `G1Input` contains `species` and a 1×(N-1) matrix of distances.
+
+# See also
+`distance_layer(input::Vector{AtomInput})` for computing distances for a single atomic configuration.
 """
+
 function distance_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)   # small epsilon to avoid zero division
     batches, _ = size(input)
@@ -186,20 +193,28 @@ end
 
 
 """
-    distance_layer(input::Vector{AtomInput}; lattice=nothing)
+    distance_layer(input::Matrix{Vector{AtomInput}}; lattice=nothing)
 
-Compute pairwise distances between atoms in a single vector of `AtomInput` objects.
+Compute pairwise distances for a batch of atomic configurations.
 
-If a `lattice` is provided, distances are computed using **minimum-image convention**
-under periodic boundary conditions (PBC). Otherwise, simple Cartesian distances are used.
+# Description
+This is the **batch version** of `distance_layer`, where each row of the matrix represents 
+a separate configuration of atoms. Distances are computed between every pair of atoms 
+in each configuration. If `lattice` is provided, the **minimum-image convention** under 
+periodic boundary conditions (PBC) is applied. Otherwise, simple Cartesian distances are used.
 
 # Arguments
-- `input::Vector{AtomInput}`: Vector of `AtomInput` objects containing `.species` and `.coord`.
-- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
+- `input::Matrix{Vector{AtomInput}}`: A matrix of batches. Each element is a vector of `AtomInput`
+  objects containing `.species::Int` and `.coord::AbstractVector` (3D coordinates at least).
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for PBC.
 
 # Returns
-- `Vector{G1Input}`: Each `G1Input` contains `species` and a 1×(N-1) matrix of distances from all other atoms.
+- `Matrix{G1Input}`: Same shape as `input`. Each `G1Input` contains `species` and a 1×(N-1) matrix of distances.
+
+# See also
+`distance_layer(input::Vector{AtomInput})` for computing distances for a single atomic configuration.
 """
+
 function distance_layer(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)
     N_atoms = length(input)
@@ -244,15 +259,18 @@ end
 """
     distance_derivatives(input::Matrix{Vector{AtomInput}}; lattice=nothing)
 
-Compute the analytical derivatives of pairwise interatomic distances for a batch of atomic systems.
+Compute analytical derivatives of pairwise interatomic distances for a batch of atomic systems.
 
-If `lattice` is provided, distances and derivatives are computed using the **minimum-image convention**
-under periodic boundary conditions (PBC). Otherwise, standard Cartesian distances are used.
+# Description
+This is the **batch version** of `distance_derivatives`. Each row of `input` represents a separate 
+atomic configuration. For each configuration, the derivatives of distances between every pair of 
+atoms are computed. If `lattice` is provided, derivatives use the **minimum-image convention** under 
+periodic boundary conditions (PBC); otherwise, standard Cartesian derivatives are used.
 
 # Arguments
 - `input::Matrix{Vector{AtomInput}}`: 2D array of atomic systems. Each element is a vector of `AtomInput`
   objects containing `.coord` fields with 3D coordinates.
-- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for PBC.
 
 # Returns
 - `Array{Float32, 4}`: Tensor of shape `(n_batch, n_atoms, n_atoms-1, 3)`:
@@ -262,7 +280,9 @@ under periodic boundary conditions (PBC). Otherwise, standard Cartesian distance
 
 # Notes
 - If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
+- See also `distance_derivatives(input::Vector{AtomInput})` for a single-configuration version.
 """
+
 function distance_derivatives(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     # Ensure input has batch dimension
     if ndims(input) == 1
@@ -318,14 +338,17 @@ end
 """
     distance_derivatives(input::Vector{AtomInput}; lattice=nothing)
 
-Compute the analytical derivatives of pairwise interatomic distances for a single atomic system.
+Compute analytical derivatives of pairwise interatomic distances for a single atomic system.
 
-If `lattice` is provided, distances and derivatives are computed using the **minimum-image convention**
-under periodic boundary conditions (PBC). Otherwise, standard Cartesian distances are used.
+# Description
+This is the **single-configuration version** of `distance_derivatives`. The function computes 
+derivatives of distances between every pair of atoms in the input vector. If `lattice` is provided, 
+the **minimum-image convention** under periodic boundary conditions (PBC) is applied; otherwise, 
+standard Cartesian derivatives are used.
 
 # Arguments
 - `input::Vector{AtomInput}`: Vector of atoms. Each `AtomInput` must have a `.coord` field with 3D coordinates.
-- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3x3 lattice matrix for PBC.
+- `lattice::Union{Nothing, Matrix{Float32}}`: Optional 3×3 lattice matrix for PBC.
 
 # Returns
 - `Array{Float32, 3}`: Tensor of shape `(n_atoms, n_atoms-1, 3)`:
@@ -335,7 +358,9 @@ under periodic boundary conditions (PBC). Otherwise, standard Cartesian distance
 
 # Notes
 - If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
+- See also `distance_derivatives(input::Matrix{Vector{AtomInput}})` for the batch version.
 """
+
 function distance_derivatives(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     n_atoms = length(input)
 
@@ -390,7 +415,7 @@ Construct a per-species neural network subbranch for atomic energy prediction.
 - `atom::String`: Atomic species name.
 - `G1_number::Int`: Number of radial G1 symmetry functions.
 - `R_cutoff::Float32`: Cutoff radius for the G1Layer.
-- `depth::Int` (optional): Number of hidden layers. `1` or `2`. Default = 2.
+- `depth::Int` (optional): Complexity of hidden layers. `1` or `2`. Default = 2.
 - `seed::Int` or `nothing` (optional): RNG seed for G1Layer initialization.
 
 # Returns
@@ -470,20 +495,28 @@ end
 """
     dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})
 
-Internal function for training.  
-Applies the correct model to each atom in the input vector of distances,  
-based on its `species` field.  
+Apply the correct per-species neural network to a single atomic configuration.
+
+# Description
+This is the **single-configuration version** of `dispatch_train`.  
+For each atom in the input vector, the function applies the corresponding neural network
+from `species_models` based on the atom's `species` field. The outputs are summed to produce
+a scalar prediction for the entire configuration.  
+
+This is a developer-level function; the public API is `dispatch`.
 
 # Arguments
-- `distances::Vector{G1Input}`: A batch of atomic inputs,  
-   where each element contains the atom's `species` ID and its neighbor distances.  
-- `species_models::Vector{Chain}`: One neural network model per species,  
-   indexed by the integer `species` ID.
+- `distances::Vector{G1Input}`: Vector of atomic inputs for one configuration,  
+  each element containing the atom's `species` ID and neighbor distances.
+- `species_models::Vector{Chain}`: One neural network model per species, indexed by `species`.
 
 # Returns
-- `output::Float32`: The aggregated scalar prediction for the whole batch  
-   (sum of per-atom outputs).
+- `Float32`: Aggregated scalar output for the configuration (sum of per-atom predictions).
+
+# See also
+`dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})` for the batched version.
 """
+
 function dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})
     n_atoms = length(distances)
     outputs = Vector{Float32}(undef, n_atoms)
@@ -501,23 +534,30 @@ end
 """
     dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})
 
-Internal function for training.  
-Handles a batched input of distances. Each column corresponds to one atom,  
-and each row to one batch element. For each atom, the correct species model  
-is applied across the batch.  
+Apply the correct per-species neural network to a batch of atomic configurations.
+
+# Description
+This is the **batch version** of `dispatch_train`.  
+Each row of `distances` represents a batch element, and each column represents an atom.
+The function applies the corresponding species model to each atom across all batches, then
+aggregates per-atom outputs into a scalar per batch.
+
+This is a developer-level function; the public API is `dispatch`.
 
 # Arguments
-- `distances::Matrix{G1Input}`: Batched atomic inputs.  
-   - Size: `(n_batches, n_atoms)`  
-   - Each entry holds `species::Int` and `dist::Vector{Float32}`.  
-   - Species is assumed to be the same across all batches for a given atom.  
+- `distances::Matrix{G1Input}`: Batched atomic inputs of size `(n_batches, n_atoms)`.  
+  Each entry contains `species::Int` and `dist::Vector{Float32}`.  
+  Species is assumed consistent across batches for each atom.
 - `species_models::Vector{Chain}`: One neural network model per species.
 
 # Returns
-- `outputs::Vector{Float32}`: A vector of length `n_batches`,  
-   each element is the aggregated prediction (sum over atoms)  
-   for that batch.
+- `Vector{Float32}`: Vector of length `n_batches`, each element is the aggregated scalar prediction 
+  (sum over atoms) for that batch.
+
+# See also
+`dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})` for a single-configuration version.
 """
+
 function dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})
     n_batches, n_atoms = size(distances)
     outputs = Matrix{Float32}(undef, n_batches, n_atoms)
@@ -550,7 +590,8 @@ end
 """
     dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, Matrix{Float32}} = nothing)
 
-Public API function.  
+Public API function. 
+The developer version is called dispatch_train. 
 Computes the distance representation of a set of atoms (optionally within a lattice),  
 then applies the appropriate species-specific models via `dispatch_train`.  
 

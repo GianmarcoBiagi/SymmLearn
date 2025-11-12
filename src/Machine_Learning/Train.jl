@@ -94,114 +94,140 @@ function train_model!(
     model,
     x_train, y_train,
     x_val, y_val;
-    λ = 1.0f0 , forces = true, initial_lr=0.01, min_lr=1e-6, decay_factor=0.1, patience=50,
-    epochs=1000, batch_size=32, verbose=false, lattice::Union{Nothing, Matrix{Float32}}=nothing
-)
+    λ::Float32=1.0f0, forces::Bool=true, initial_lr::Float32=0.01f0, min_lr::Float32=0.00001f0,
+    decay_factor::Float32=0.1f0, patience::Int=50, epochs::Int=1000, batch_size::Int=32,
+    verbose::Bool=false, lattice::Union{Nothing, Matrix{Float32}}=nothing)
 
-    o =  OptimiserChain(ClipNorm(1.0), Adam(initial_lr))
+  # Input validation
+  if model === nothing
+    println("Error: 'model' is missing. Provide a valid Flux.Chain model.")
+    exit(1)
+  end
+  if x_train === nothing || isempty(x_train) || y_train === nothing || isempty(y_train)
+    println("Error: Training data is missing or empty. Provide valid x_train and y_train.")
+    exit(1)
+  end
+  if x_val === nothing || isempty(x_val) || y_val === nothing || isempty(y_val)
+    println("Error: Validation data is missing or empty. Provide valid x_val and y_val.")
+    exit(1)
+  end
+  if initial_lr <= 0f0
+    println("Error: 'initial_lr' must be positive.")
+    exit(1)
+  end
+  if min_lr <= 0f0
+    println("Error: 'min_lr' must be positive.")
+    exit(1)
+  end
+  if decay_factor <= 0f0 || decay_factor >= 1f0
+    println("Error: 'decay_factor' must be between 0 and 1.")
+    exit(1)
+  end
+  if epochs <= 0 || batch_size <= 0
+    println("Error: 'epochs' and 'batch_size' must be positive integers.")
+    exit(1)
+  end
+  if lattice !== nothing && !(typeof(lattice) <: Matrix{Float32})
+    println("Error: 'lattice' must be a Matrix{Float32} or nothing.")
+    exit(1)
+  end
 
-    # Setup dell'ottimizzatore con il modello
-    opt = Flux.setup(o, model)
-    N = size(x_train , 1)
+  # Optimizer setup
+  o = OptimiserChain(ClipNorm(1.0), Adam(initial_lr))
+  opt = Flux.setup(o, model)
+  N = size(x_train, 1)
+
+  # Precompute energies and forces
+
+  e_t = extract_energies(y_train)
+  f_t = extract_forces(y_train)
+  e_v = extract_energies(y_val)
+  f_v = extract_forces(y_val)
 
 
-    # Precompute validation targets
-    e_v = extract_energies(y_val)
-    f_v = extract_forces(y_val )
-    e_t = extract_energies(y_train)
-    f_t = extract_forces(y_train )
+  dist_train = distance_layer(x_train; lattice=lattice)
+  dist_val   = distance_layer(x_val; lattice=lattice)
+  d_matrix_train = distance_derivatives(x_train; lattice=lattice)
+  d_matrix_val   = distance_derivatives(x_val; lattice=lattice)
 
-    dist_train = distance_layer(x_train ; lattice = lattice )
-    dist_val = distance_layer(x_val ; lattice = lattice)
 
-    d_matrix_train = distance_derivatives(x_train ; lattice = lattice)
-    d_matrix_val = distance_derivatives(x_val; lattice = lattice)
+  current_lr = initial_lr
+  best_model = deepcopy(model)
+  best_epoch = 1
+  best_loss  = Inf
+  no_improve_count = 0
 
-  
-
-    current_lr   = initial_lr
-    best_model   = deepcopy(model)
-    best_epoch   = 1
-    best_loss    = Inf
-    no_improve_count = 0
- 
-
-    loss_tr = zeros(Float32, epochs)
-    loss_val   = zeros(Float32, epochs)
+  loss_tr = zeros(Float32, epochs)
+  loss_val = zeros(Float32, epochs)
 
     @showprogress for epoch in 1:epochs
-      # Loop sui batch
-      for batch in batch_indices(N, batch_size)
+        # Mini-batch gradient update
+        for batch in batch_indices(N, batch_size)
+            xb = dist_train[batch, :]
+            yb = y_train[batch]
+            x_der = d_matrix_train[batch, :, :, :]
+            e = e_t[batch]
+            f = f_t[batch, :, :]
+            fconst = forces ? force_loss(model, xb, f, x_der) : 0f0
+
+
+            grad = Enzyme.gradient(set_runtime_activity(Reverse),
+                                       (m, x, ee, ff) -> loss_train(m, x, ee, ff; λ),
+                                       model, Const(xb), Const(e), Const(fconst))[1]
+
+
        
-        xb = dist_train[batch, :]
-        yb = y_train[batch]
 
-        x_der = d_matrix_train[batch, : , : ,:]
-    
+            Flux.update!(opt, model, grad)
+        end
 
-        e = e_t[batch]
-        f = f_t[batch , : , :]
-            
-
-        fconst = forces ? force_loss(model, xb, f , x_der) : 0f0
-   
-  
-
-        grad = Enzyme.gradient(set_runtime_activity(Reverse),
-                              (m, x, ee, ff) -> loss_train(m, x, ee, ff ; λ),
-                              model, Const(xb), Const(e), Const(fconst))[1]
-
-      
-
-        Flux.update!(opt, model, grad)
-      end
-
-      # Calcolo della loss sull’intero train e val set
-    
-      fconst_t = forces ? force_loss(model, dist_train, f_t, d_matrix_train) : 0f0
-      fconst_v = forces ? force_loss(model, dist_val, f_v, d_matrix_val)   : 0f0
+        # Full train/val loss computation
+        fconst_t = forces ? force_loss(model, dist_train, f_t, d_matrix_train) : 0f0
+        fconst_v = forces ? force_loss(model, dist_val, f_v, d_matrix_val) : 0f0
 
 
-      loss_tr[epoch] = loss_train(model, dist_train, e_t, fconst_t ; λ)
-      loss_val[epoch]   = loss_train(model, dist_val,   e_v, fconst_v ; λ)
-
-      if isnan(loss_tr[epoch]) || isnan(loss_val[epoch])
-        println("Something is wrong, the computed loss is NaN , getting out from the train function")
-        println("try a smaller learning rate!")
-        break
-      end
+        loss_tr[epoch]  = loss_train(model, dist_train, e_t, fconst_t; λ)
+        loss_val[epoch] = loss_train(model, dist_val, e_v, fconst_v; λ)
 
 
+        if isnan(loss_tr[epoch]) || isnan(loss_val[epoch])
+            println("Error: NaN detected in loss at epoch $epoch. Try reducing learning rate.")
+            exit(1)
+        end
 
-      if verbose && epoch%50 == 0
-        println("------- epoch  $epoch -------")
-        println("The loss on the train dataset is $(loss_tr[epoch])")
-        println("The loss on the val dataset is $(loss_val[epoch])")
-      end
+        if verbose && epoch % 50 == 0
+            println("------- epoch $epoch -------")
+            println("Training loss: ", loss_tr[epoch])
+            println("Validation loss: ", loss_val[epoch])
+        end
 
-      # Gestione decay del learning rate ed early stopping
-      opt, current_lr, no_improve_count, stop_training =
-          maybe_decay_lr!(opt, current_lr, no_improve_count,
-                          patience, decay_factor, min_lr, epoch; verbose=verbose)
+        # Learning rate decay and early stopping
 
-      # Salvataggio del best model
-      best_model, best_loss, best_epoch, no_improve_count =
-        maybe_save_best!(model, loss_val[epoch], epoch,
-                        best_model, best_loss, best_epoch, no_improve_count)
+            opt, current_lr, no_improve_count, stop_training =
+                maybe_decay_lr!(opt, current_lr, no_improve_count,
+                                patience, decay_factor, min_lr, epoch; verbose=verbose)
 
-      if stop_training
-        println("Early stopping at epoch $epoch: learning rate reached min_lr")
-        break
-      end
-  end
 
-  if verbose
-      println("Final Train Loss: ", loss_tr[best_epoch])
-      println("Final Val Loss: ", loss_val[best_epoch])
-  end
+            best_model, best_loss, best_epoch, no_improve_count =
+                maybe_save_best!(model, loss_val[epoch], epoch,
+                                 best_model, best_loss, best_epoch, no_improve_count)
 
-  return  best_model, loss_tr, loss_val
+ 
+
+        if stop_training
+            println("Early stopping at epoch $epoch: learning rate reached min_lr")
+            break
+        end
+    end
+
+    if verbose
+        println("Final training loss: ", loss_tr[best_epoch])
+        println("Final validation loss: ", loss_val[best_epoch])
+    end
+
+    return best_model, loss_tr, loss_val
 end
+
 
 
 

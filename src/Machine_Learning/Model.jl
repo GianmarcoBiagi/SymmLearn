@@ -478,17 +478,55 @@ println(models[2])  # model for O
 ```
 """
 function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
-                              G1_number::Int, R_cutoff::Float32 ; depth = 2::Int , seed::Union{Int,Nothing} = nothing)
+                              G1_number::Int, R_cutoff::Float32; depth::Int=2, seed::Union{Int,Nothing}=nothing)
+    # Input validation
+    if unique_species === nothing || isempty(unique_species)
+        println("Error: 'unique_species' is empty. Provide a list of species names.")
+        exit(1)
+    end
+    if species_idx === nothing || isempty(species_idx)
+        println("Error: 'species_idx' dictionary is empty. Map each species to a numeric index.")
+        exit(1)
+    end
+    if G1_number <= 0
+        println("Error: 'G1_number' must be positive. Set a valid neuron count for G1Layer.")
+        exit(1)
+    end
+    if R_cutoff <= 0f0
+        println("Error: 'R_cutoff' must be positive. Provide a valid cutoff radius.")
+        exit(1)
+    end
+    if depth <= 0
+        println("Error: 'depth' must be positive. Set depth ≥ 1.")
+        exit(1)
+    end
+
     n_species = length(unique_species)
     species_models = Vector{Chain}(undef, n_species)
-    
+
     for spec in unique_species
+        if !haskey(species_idx, spec)
+            println("Error: Species '$spec' not found in 'species_idx'. Ensure all species are mapped.")
+            exit(1)
+        end
         idx = species_idx[spec]
-        species_models[idx] = build_branch(spec, G1_number, R_cutoff , depth ; seed = seed)
+
+        try
+            species_models[idx] = build_branch(spec, G1_number, R_cutoff, depth; seed=seed)
+        catch e
+            println("Error building model for species '$spec': $(e). Check G1 parameters and seed.")
+            exit(1)
+        end
+
+        if species_models[idx] === nothing
+            println("Error: Model for species '$spec' is undefined after build_branch. Verify build_branch output.")
+            exit(1)
+        end
     end
-    
+
     return species_models
 end
+
 
 
 """
@@ -613,67 +651,137 @@ batch_result = dispatch(batch_atoms, models)
 println(batch_result)```
 """
 function dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, Matrix{Float32}} = nothing)
-    distances = distance_layer(atoms; lattice = lattice)
-    return dispatch_train(distances, species_models)
+    # Input validation
+    if species_models === nothing || isempty(species_models)
+        println("Error: 'species_models' is missing or empty. Provide a compatible model with the input.")
+        exit(1)
+    end
+    if atoms === nothing || isempty(atoms)
+        println("Error: 'atoms' input is missing or empty. Provide valid atomic structure data.")
+        exit(1)
+    end
+
+
+    try
+        distances = distance_layer(atoms; lattice=lattice)
+    catch e
+        println("Error in distance_layer: $(e). Verify that 'atoms' and optional 'lattice' are correctly formatted.")
+        exit(1)
+    end
+
+    if distances === nothing || isempty(distances)
+        println("Error: 'distance_layer' returned empty or invalid data. Check atomic coordinates or lattice definition.")
+        exit(1)
+    end
+
+    try
+        output = dispatch_train(distances, species_models)
+    catch e
+        println("Error in dispatch_train: $(e). Ensure model count matches species and distance dimensions are valid.")
+        exit(1)
+    end
+
+    if output === nothing || isempty(output)
+        println("Error: Model output is empty. Check that models are properly trained and compatible with input data.")
+        exit(1)
+    end
+
+    return output
 end
 
 
-"""
-    predict_forces(x, model; flat=false) -> Array{Float32}
 
-Compute predicted atomic forces for a batch of structures using a trained model.
+function predict_forces(x, model; flat=false)
+    # Input validation
+    if model === nothing || isempty(model)
+        println("Error: Model is missing or empty. Provide a valid trained neural network model.")
+        exit(1)
+    end
+    if x === nothing || isempty(x)
+        println("Error: Input structures 'x' are missing or empty. Provide valid atomic structures.")
+        exit(1)
+    end
+    if !(typeof(flat) <: Bool)
+        println("Error: Argument 'flat' must be a Boolean value (true or false).")
+        exit(1)
+    end
 
-# Arguments
-- `x`: Input atomic structures, either a `Matrix{Vector{AtomInput}}` (batched) or compatible with `distance_layer`.
-- `model`: Species-specific neural network models used for force prediction.
-- `flat::Bool` (optional): If `true`, return forces flattened as a 1D vector;  
-  if `false` (default), return a 3D array `(n_batches, n_atoms, 3)`.
+    try
+        dist = distance_layer(x)
+    catch e
+        println("Error in distance_layer: $(e). Verify that 'x' contains valid atomic coordinates.")
+        exit(1)
+    end
 
-# Returns
-- `Array{Float32}`: Predicted forces for all atoms:
-    - `(n_batches, n_atoms, 3)` if `flat=false`
-    - Flattened 1D array if `flat=true`
+    try
+        derivatives = distance_derivatives(x)
+    catch e
+        println("Error in distance_derivatives: $(e). Check that 'x' is correctly formatted and non-empty.")
+        exit(1)
+    end
 
-# Description
-1. Compute pairwise distances with `distance_layer`.
-2. Compute distance derivatives with `distance_derivatives`.
-3. For each batch, compute force contributions from model gradients.
-4. Optionally flatten the resulting force array.
-```julia
-# Assume x_test contains a batch of structures and models is defined
-forces = predict_forces(x_test, models)
-println(size(forces))  # (n_batches, n_atoms, 3)
+    if ndims(x) < 2
+        println("Error: Input 'x' must represent a batch of structures (Matrix or higher-dimensional array).")
+        exit(1)
+    end
 
-forces_flat = predict_forces(x_test, models; flat=true)
-println(length(forces_flat))  # n_batches * n_atoms * 3```
-"""
-function predict_forces(x , model ; flat = false)
-    dist = distance_layer(x)
-    derivatives = distance_derivatives(x)
+    try
+        n_batches, _ = size(x)
+        n_atoms = size(x[1], 1)
+    catch e
+        println("Error determining batch or atom size: $(e). Ensure 'x' is structured as an array of atomic data.")
+        exit(1)
+    end
 
-    n_batches , _ = size(x)
-    n_atoms = size(x[1] , 1)
+    if n_batches <= 0 || n_atoms <= 0
+        println("Error: Invalid batch or atom count detected. Provide non-empty atomic data.")
+        exit(1)
+    end
 
-    predicted_forces = zeros(Float32 , (n_batches , n_atoms , 3))
+    predicted_forces = zeros(Float32, (n_batches, n_atoms, 3))
 
     for b in 1:n_batches
-        grad = calculate_force(dist[b, :], model)
-        temp = zeros(Float32, n_atoms , 3)
-        for i in 1:n_atoms
-
-            contrib =  (grad[i] * derivatives[b,i, :, :])  # (1,3)
-            temp[i , 1:3] .= vec(contrib)
-       
+        try
+            grad = calculate_force(dist[b, :], model)
+        catch e
+            println("Error in calculate_force for batch $b: $(e). Verify model compatibility and distance tensors.")
+            exit(1)
         end
 
-        predicted_forces[b, : , :] .= temp
+        if length(grad) != n_atoms
+            println("Error: Gradient size mismatch in batch $b. Ensure model outputs align with atom count.")
+            exit(1)
+        end
+
+        temp = zeros(Float32, n_atoms, 3)
+
+        for i in 1:n_atoms
+            try
+                contrib = grad[i] * derivatives[b, i, :, :]
+            catch e
+                println("Error combining gradient and derivatives at atom $i, batch $b: $(e). Check tensor dimensions.")
+                exit(1)
+            end
+
+            if length(vec(contrib)) != 3
+                println("Error: Force contribution must be a 3D vector. Verify derivative matrix structure.")
+                exit(1)
+            end
+
+            temp[i, 1:3] .= vec(contrib)
+        end
+
+        predicted_forces[b, :, :] .= temp
     end
 
     if flat
- 
-        return vcat(predicted_forces...)
+        try
+            return vcat(predicted_forces...)
+        catch e
+            println("Error flattening force array: $(e). Ensure predicted force array dimensions are valid.")
+            exit(1)
+        end
     else
         return predicted_forces
     end
 end
-

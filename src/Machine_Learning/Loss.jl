@@ -22,37 +22,80 @@ This is a user-level function; the developer version is `loss_train`.
 total_loss = loss(models, x_batch, y_batch; λ=0.5f0, forces=true)
 println("Computed loss: ", total_loss)```
 """
-function loss(model, x, y; λ::Float32=1.0f0 , forces::Bool = true)
-    one_sample = false
-    # Compute the energy contribution
-    y_energy = extract_energies(y)
-    distances = distance_layer(x)
- 
+function loss(model, x, y; λ::Float32=1.0f0, forces::Bool=true)
+    # Input validation
+    if model === nothing || isempty(model)
+        println("Error: Model is missing or empty. Provide a valid vector of neural network models.")
+        exit(1)
+    end
+    if x === nothing || isempty(x)
+        println("Error: Input data 'x' is missing or empty. Provide valid atomic structures.")
+        exit(1)
+    end
+    if y === nothing || isempty(y)
+        println("Error: Reference labels 'y' are missing or empty. Provide corresponding energies and forces.")
+        exit(1)
+    end
+    if λ < 0
+        println("Error: λ must be non-negative. Use a value ≥ 0.")
+        exit(1)
+    end
 
-    # --- Energy prediction + loss ---
-    e_pred = dispatch_train(distances, model)
+    try
+        y_energy = extract_energies(y)
+    catch e
+        println("Error in extract_energies: $(e). Ensure 'y' contains valid energy data.")
+        exit(1)
+    end
+
+    try
+        distances = distance_layer(x)
+    catch e
+        println("Error in distance_layer: $(e). Check that 'x' contains valid atomic coordinates.")
+        exit(1)
+    end
+
+    try
+        e_pred = dispatch_train(distances, model)
+    catch e
+        println("Error in dispatch_train: $(e). Verify the model and distance tensors are compatible.")
+        exit(1)
+    end
+
+    if length(e_pred) != length(y_energy)
+        println("Error: Energy prediction and reference lengths do not match. Align input and label data.")
+        exit(1)
+    end
+
     e_loss = mean((e_pred .- y_energy).^2)
 
+    if forces
+        try
+            f = extract_forces(y)
+            f_matrix = distance_derivatives(x)
+        catch e
+            println("Error in force extraction or derivative computation: $(e). Check 'y' and 'x' consistency.")
+            exit(1)
+        end
 
-    #if forces compute the forces contribution
-    if forces 
+        if isempty(f) || isempty(f_matrix)
+            println("Error: Force data or derivative matrix is empty. Verify that 'y' includes force information.")
+            exit(1)
+        end
 
-        f =  extract_forces(y)
-        f_matrix = distance_derivatives(x)
-      
-
-        f_loss = mean(force_loss(model, distances,  f , f_matrix))
-
+        try
+            f_loss = mean(force_loss(model, distances, f, f_matrix))
+        catch e
+            println("Error in force_loss: $(e). Ensure model outputs and force targets are compatible.")
+            exit(1)
+        end
     else
-
         f_loss = 0f0
-
     end
-    
 
-    # --- Total loss ---
     return e_loss + λ * f_loss
 end
+
 
 
 """

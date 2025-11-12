@@ -347,17 +347,56 @@ println("Unique species: ", unique_species)
 ```
 """
 function xyz_to_nn_input(file_path::String)
+    # Input validation
+    if !isfile(file_path)
+        println("Error: The specified file does not exist. Check the path: '$file_path'")
+        exit(1)
+    end
+    if !endswith(file_path, ".xyz")
+        println("Error: The file must have a .xyz extension. Rename or provide a valid file.")
+        exit(1)
+    end
 
-    # Extract atomic and structural information from the input XYZ file
-    N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
+    try
+        # Extract atomic and structural information
+        N_atoms, species, unique_species, all_cells, dataset, all_energies = extract_data(file_path)
+    catch e
+        println("Error in extract_data: $(e). Verify that the XYZ file is properly formatted.")
+        exit(1)
+    end
 
-    # Create the neural network input dataset and forces 
-    nn_input_dataset , all_forces, species_idx = prepare_nn_data(dataset, species, unique_species)
+    if N_atoms <= 0 || isempty(species) || isempty(unique_species)
+        println("Error: No atoms or species found. Check the content of the XYZ file.")
+        exit(1)
+    end
 
+    try
+        # Create the neural network input dataset and forces
+        nn_input_dataset, all_forces, species_idx = prepare_nn_data(dataset, species, unique_species)
+    catch e
+        println("Error in prepare_nn_data: $(e). Ensure that the extracted data are consistent and complete.")
+        exit(1)
+    end
 
-    # Preprocess data: normalize, split into train, validation, and test sets
-    x_train , y_train , x_val , y_val, x_test , y_test, mean, std = data_preprocess(nn_input_dataset, all_energies, all_forces)
-    
-    # Return the processed datasets and normalization parameters
-    return (x_train , y_train , x_val , y_val, x_test , y_test, mean, std , unique_species, species_idx, all_cells[1])
+    if isempty(nn_input_dataset) || isempty(all_forces)
+        println("Error: Empty dataset or forces. Make sure the input data are valid.")
+        exit(1)
+    end
+
+    try
+        # Preprocess data: normalize and split into train, validation, and test sets
+        x_train, y_train, x_val, y_val, x_test, y_test, mean, std = data_preprocess(nn_input_dataset, all_energies, all_forces)
+    catch e
+        println("Error in data_preprocess: $(e). Check the input data and normalization parameters.")
+        exit(1)
+    end
+
+    if any(isnan.(mean)) || any(isnan.(std))
+        println("Error: NaN values detected in normalization parameters. Remove or correct problematic data.")
+        exit(1)
+    end
+
+    # Return processed datasets and normalization parameters
+    return (x_train, y_train, x_val, y_val, x_test, y_test, mean, std, unique_species, species_idx, all_cells[1])
 end
+

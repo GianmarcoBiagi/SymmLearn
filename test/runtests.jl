@@ -1,14 +1,42 @@
 using Test
 using SymmLearn
 
-include("../src/Data_prep.jl")
+include("../src/Machine_Learning/Data_prep.jl")
 include("../src/Utils.jl")
-include("../src/Train.jl")
-include("../src/Model.jl")
-include("../src/Loss.jl")
+include("../src/Machine_Learning/Train.jl")
+include("../src/Machine_Learning/Model.jl")
+include("../src/Machine_Learning/Loss.jl")
+
+"""
+Testset: "Expected user use of the package"
+
+Purpose:
+Validate the entire expected workflow as experienced by an end user of the package.  
+This test simulates a realistic usage scenario, from raw data extraction to model training,
+ensuring that each major pipeline component operates coherently and produces consistent, 
+non-empty outputs.
+
+Why:
+This test guarantees that the integration between data preparation, preprocessing, 
+model construction, and training behaves as expected under normal use. It ensures
+the exposed functions interoperate correctly and that training updates model parameters.
+
+What:
+1. Verify that `extract_data` correctly parses an input file and yields consistent structures.  
+2. Confirm that `prepare_nn_data` generates valid neural network input data.  
+3. Check that `data_preprocess` splits and structures datasets as required for training.  
+4. Validate that `build_species_models` constructs models without errors.  
+5. Ensure `distance_layer`, `distance_derivatives`, `extract_energies`, and `extract_forces`
+   produce outputs with consistent shapes.  
+6. Confirm that `dispatch_train`, `force_loss`, and `loss_train` produce meaningful numeric results.  
+7. Verify that `train_model!` modifies model parameters after one epoch, demonstrating that 
+   learning occurs.
+
+Failure of any individual assertion isolates a specific phase of the workflow.
+"""
 
 
-@testset "Model Training Test" begin
+@testset "Expected user use of the package" begin
     file_path = "test/reduced_train.xyz"
     
     # Step 1: Extract information from the input file
@@ -83,7 +111,5 @@ include("../src/Loss.jl")
 
     @test trained_params != params
   
-
-    
 
 end

@@ -22,8 +22,7 @@ charge_example = 1.0f0
 
 layer = G1Layer(W_eta_example, W_Fs_example, cutoff_example, charge_example)
 println("Layer created: ", layer)
-
-
+```
 """
 struct G1Layer
     W_eta::Vector{Float32}
@@ -95,11 +94,9 @@ Apply the `G1Layer` to a batch of atomic distances, computing radial symmetry fu
 layer = G1Layer(5, 2.5f0, 1.0f0)  # 5 symmetry functions, cutoff 2.5, charge 1.0
 x = rand(Float32, 3, 10)          # 3 atoms, 10 neighbors each
 output = layer(x)                 # Output shape: (5, 3)
-
+```
 
 """
-
-
 function (layer::G1Layer)(x::AbstractMatrix{Float32})
     n_batch, n_neighbors = size(x)
     n_features = size(layer.W_eta, 1)
@@ -146,7 +143,6 @@ periodic boundary conditions (PBC) is applied. Otherwise, simple Cartesian dista
 # See also
 `distance_layer(input::Vector{AtomInput})` for computing distances for a single atomic configuration.
 """
-
 function distance_layer(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)   # small epsilon to avoid zero division
     batches, _ = size(input)
@@ -214,7 +210,6 @@ periodic boundary conditions (PBC) is applied. Otherwise, simple Cartesian dista
 # See also
 `distance_layer(input::Vector{AtomInput})` for computing distances for a single atomic configuration.
 """
-
 function distance_layer(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     ϵ = Float32(1e-7)
     N_atoms = length(input)
@@ -282,7 +277,6 @@ periodic boundary conditions (PBC); otherwise, standard Cartesian derivatives ar
 - If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
 - See also `distance_derivatives(input::Vector{AtomInput})` for a single-configuration version.
 """
-
 function distance_derivatives(input::Matrix{Vector{AtomInput}}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     # Ensure input has batch dimension
     if ndims(input) == 1
@@ -360,7 +354,6 @@ standard Cartesian derivatives are used.
 - If two atoms coincide (distance numerically zero), the derivative is set to `(0, 0, 0)`.
 - See also `distance_derivatives(input::Matrix{Vector{AtomInput}})` for the batch version.
 """
-
 function distance_derivatives(input::Vector{AtomInput}; lattice::Union{Nothing, Matrix{Float32}}=nothing)
     n_atoms = length(input)
 
@@ -425,10 +418,6 @@ Construct a per-species neural network subbranch for atomic energy prediction.
     - Dense layers with `swish` activation.
     - Final Dense layer outputs scalar atomic energy.
 """
-
-
-
-
 function build_branch(Atom_name::String, G1_number::Int, R_cutoff::Float32 , depth::Int = 2 ; seed::Union{Int,Nothing} = nothing)
     ion_charge = element_to_charge[Atom_name]
     if depth == 2
@@ -477,6 +466,16 @@ to the correct model based on its numeric index.
 
 # Returns
 - `species_models::Vector{Chain}`: Array of models, ready for Enzyme differentiation.
+```julia
+unique_species = ["H", "O"]
+species_idx = Dict("H"=>1, "O"=>2)
+G1_number = 5
+R_cutoff = 5.0f0
+
+models = build_species_models(unique_species, species_idx, G1_number, R_cutoff; depth=2)
+println(models[1])  # model for H
+println(models[2])  # model for O
+```
 """
 function build_species_models(unique_species::Vector{String}, species_idx::Dict{String,Int}, 
                               G1_number::Int, R_cutoff::Float32 ; depth = 2::Int , seed::Union{Int,Nothing} = nothing)
@@ -516,7 +515,6 @@ This is a developer-level function; the public API is `dispatch`.
 # See also
 `dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})` for the batched version.
 """
-
 function dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})
     n_atoms = length(distances)
     outputs = Vector{Float32}(undef, n_atoms)
@@ -557,7 +555,6 @@ This is a developer-level function; the public API is `dispatch`.
 # See also
 `dispatch_train(distances::Vector{G1Input}, species_models::Vector{Chain})` for a single-configuration version.
 """
-
 function dispatch_train(distances::Matrix{G1Input}, species_models::Vector{Chain})
     n_batches, n_atoms = size(distances)
     outputs = Matrix{Float32}(undef, n_batches, n_atoms)
@@ -604,6 +601,16 @@ then applies the appropriate species-specific models via `dispatch_train`.
 # Returns
 - `outputs`: Model predictions, either a scalar (single batch)  
    or a vector (batched input), depending on the input format.
+```julia
+# Single configuration
+atoms = sample_atoms()  # returns a Vector{AtomInput}
+models = [model_H, model_O]  # one Flux.Chain per species
+result = dispatch(atoms, models)
+
+# Batched configurations
+batch_atoms = [atoms1, atoms2, atoms3]
+batch_result = dispatch(batch_atoms, models)
+println(batch_result)```
 """
 function dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, Matrix{Float32}} = nothing)
     distances = distance_layer(atoms; lattice = lattice)
@@ -632,11 +639,14 @@ Compute predicted atomic forces for a batch of structures using a trained model.
 2. Compute distance derivatives with `distance_derivatives`.
 3. For each batch, compute force contributions from model gradients.
 4. Optionally flatten the resulting force array.
+```julia
+# Assume x_test contains a batch of structures and models is defined
+forces = predict_forces(x_test, models)
+println(size(forces))  # (n_batches, n_atoms, 3)
+
+forces_flat = predict_forces(x_test, models; flat=true)
+println(length(forces_flat))  # n_batches * n_atoms * 3```
 """
-
-
-
-
 function predict_forces(x , model ; flat = false)
     dist = distance_layer(x)
     derivatives = distance_derivatives(x)

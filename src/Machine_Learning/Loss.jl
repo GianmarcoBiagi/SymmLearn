@@ -17,8 +17,11 @@ This is a user-level function; the developer version is `loss_train`.
 
 # Returns
 - `Float32`: Total loss (energy-only if `forces=false`, energy + λ·forces otherwise).
+```julia
+# Assume models, x_batch, y_batch are defined
+total_loss = loss(models, x_batch, y_batch; λ=0.5f0, forces=true)
+println("Computed loss: ", total_loss)```
 """
-
 function loss(model, x, y; λ::Float32=1.0f0 , forces::Bool = true)
     one_sample = false
     # Compute the energy contribution
@@ -122,8 +125,6 @@ and mapping gradients via `f_matrix`, then compares them to the reference forces
 # See also
 `force_loss(model, X::Matrix{G1Input}, F::Array{Float32,3}, F_matrix::Array{Float32,4})` for the batched version.
 """
-
-
 function force_loss(model, x::AbstractVector,  f , f_matrix)
 
     d_matrix = calculate_force(x , model)
@@ -162,8 +163,6 @@ the mean squared error (MSE) against the reference forces.
 # See also
 `force_loss(model, x::AbstractVector, f, f_matrix)` for the single-structure version.
 """
-
-
 function force_loss(model, X::Matrix{G1Input}, F::Array{Float32, 3}, F_matrix::Array{Float32, 4})
     # Map each example in the batch to its force loss
     
@@ -193,7 +192,6 @@ This is a developer-level function; the public API is `loss`.
 # Returns
 - `Float32`: Total loss combining mean energy loss and weighted mean force term.
 """
-
 function loss_train(models, x, y, fconst; λ::Float32=1.0f0)    
   e_loss = energy_loss( models , x , y)
   return (mean(e_loss) .+ λ .* mean(fconst))

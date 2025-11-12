@@ -8,7 +8,6 @@ Container for target data of one atomic configuration.
 - `energy::Float32`: Total energy of the configuration.
 - `forces::Array{Float32,2}`: Forces acting on the atoms, shape (num_atoms, 3).
 """
-
 struct Sample
     energy::Float32
     forces::Array{Float32,2}
@@ -27,7 +26,6 @@ Container for one atom in a structure.
 - `species`: integer index in 1..K identifying the species.
 - `coord`: atomic coordinates as a vector.
 """
-
 struct AtomInput{T<:AbstractVector}
     species::Int
     coord::T
@@ -49,7 +47,6 @@ Container for one atom in a structure.
 - `species`: integer index in 1..K identifying the species.
 - `dist`: matrix of distances between the atom and the others.
 """
-
 struct G1Input{T<:AbstractMatrix}
     species::Int
     dist::T
@@ -100,8 +97,8 @@ A tuple containing:
 ### Example Usage:
 ```julia
 atoms_in_a_cell, species,unique_species, all_cells, dataset, all_energies = extract_data("path/to/data.xyz")
+```
 """
-
 function extract_data(path::String)
 
     # Read the frame data from the provided file path
@@ -166,7 +163,6 @@ Convert a dataset of atomic positions and forces into atom-wise inputs for a neu
 - `species_idx::Dict{String,Int}`:
     Mapping from species name to integer index, consistent across atoms.
 """
-
 function prepare_nn_data(dataset::Array{Float32,3},
                          species_order::Vector{String},
                          unique_species::Vector{String})
@@ -227,10 +223,6 @@ A tuple containing:
     - `.energy`: normalized scalar energy.
     - `.forces`: rescaled force matrix `(n_atoms, 3)`.
 """
-
-
-
-
 function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::Vector{Float64})
 
     ϵ = Float32(1e-6)
@@ -259,7 +251,7 @@ function data_preprocess(input_data, energies , forces ; split=[0.6, 0.2, 0.2]::
 
 
     ##### --- Return --- #####
-    return x_train[: , :], y_train, x_val[: , :], y_val, x_test[: , :], y_test, (e_mean, e_std)
+    return x_train[: , :], y_train, x_val[: , :], y_val, x_test[: , :], y_test, e_mean, e_std
 end
 
 
@@ -345,10 +337,15 @@ Steps performed:
 # Dependencies
 - `extract_data(file_path)`: Parses raw atomic data from the XYZ file.  
 - `prepare_nn_data(dataset, species, unique_species)`: Builds NN inputs and forces arrays.  
-- `data_preprocess(nn_input_dataset, all_energies, all_forces)`: Normalizes and splits the dataset.  
+- `data_preprocess(nn_input_dataset, all_energies, all_forces)`: Normalizes and splits the dataset.
+# Example
+```julia
+file_path = "example_structures.xyz"
+x_train, y_train, x_val, y_val, x_test, y_test, (energy_mean, energy_std), unique_species, species_idx, all_cells = xyz_to_nn_input(file_path)
+println("Training set size: ", length(x_train))
+println("Unique species: ", unique_species)
+```
 """
-
-
 function xyz_to_nn_input(file_path::String)
 
     # Extract atomic and structural information from the input XYZ file
@@ -359,8 +356,8 @@ function xyz_to_nn_input(file_path::String)
 
 
     # Preprocess data: normalize, split into train, validation, and test sets
-    x_train , y_train , x_val , y_val, x_test , y_test, stat = data_preprocess(nn_input_dataset, all_energies, all_forces)
+    x_train , y_train , x_val , y_val, x_test , y_test, mean, std = data_preprocess(nn_input_dataset, all_energies, all_forces)
     
     # Return the processed datasets and normalization parameters
-    return (x_train , y_train , x_val , y_val, x_test , y_test, stat, unique_species, species_idx, all_cells)
+    return (x_train , y_train , x_val , y_val, x_test , y_test, mean, std , unique_species, species_idx, all_cells[1])
 end

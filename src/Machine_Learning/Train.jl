@@ -80,11 +80,16 @@ and early stopping.
 - Forces are computed using analytical derivatives of distances and backpropagated through the model.
 - The `λ` parameter balances energy and force contributions in the total loss.
 - Loss values are monitored to prevent NaNs; training will stop if a NaN is detected.
+
+```julia
+# Assume models, x_train, y_train, x_val, y_val are defined
+best_model, train_loss, val_loss = train_model!(
+    model, x_train, y_train, x_val, y_val;
+    λ=0.5f0, forces=true, initial_lr=0.01, epochs=500, batch_size=16, verbose=true
+)
+
+println("Training finished. Best validation loss: ", minimum(val_loss))```
 """
-
-
-
-
 function train_model!(
     model,
     x_train, y_train,
@@ -232,7 +237,6 @@ Tuple `(best_model, best_loss, best_epoch, no_improve_count)` with updated value
 - Setting `tol < 1.0` allows small tolerance before updating the best model.
 - This function is useful for implementing early stopping and adaptive learning rate strategies in training loops.
 """
-
 function maybe_save_best!(model, loss_val, epoch, best_model, best_loss, best_epoch, no_improve_count; tol=1.0)
     if loss_val < best_loss * tol
         return deepcopy(model), loss_val, epoch, 0
@@ -272,7 +276,6 @@ Tuple `(opt, current_lr, no_improve_count, stop_training::Bool)`:
 - This function allows adaptive learning rate schedules without restarting training.
 - The optimizer’s momentum buffers remain intact.
 """
-
 function maybe_decay_lr!(opt, current_lr, no_improve_count, patience, decay_factor, min_lr, epoch; verbose=false)
     if no_improve_count >= patience
         new_lr = max(current_lr * decay_factor, min_lr)
@@ -306,7 +309,6 @@ contained within a possibly nested optimizer structure.
 - Other optimizer types or wrappers are left unchanged.
 - This function modifies the optimizer in-place.
 """
-
 function update_lr!(opt, new_lr)
     for leaf in opt
         for (k, v) in pairs(leaf)
@@ -336,9 +338,6 @@ Generate mini-batch indices for stochastic gradient descent.
 - The indices are shuffled randomly each call to ensure stochasticity.
 - Useful for iterating over training data in `train_model!`.
 """
-
-
-
 function batch_indices(n, batchsize)
     # Restituisce un vettore di vettori con gli indici dei batch
     idx = collect(1:n)

@@ -11,9 +11,8 @@ This is used to assign a charge or atomic number to an element for neural networ
 # Retrieve atomic number of Carbon
 carbon_atomic_number = element_to_charge["C"]
 println(carbon_atomic_number)  # Output: 6
-
+```
 """ 
-
 element_to_charge = Dict(
     "H" => 1,
     "He" => 2,
@@ -143,9 +142,8 @@ Inverse mapping of `element_to_charge`. Maps atomic numbers (charges) to their e
 ```julia
 charge_to_element[6]  # Returns "C"
 charge_to_element[79] # Returns "Au"
-
+```
 """
-
 charge_to_element = Dict(v => k for (k, v) in element_to_charge)
 
 """
@@ -171,7 +169,6 @@ Compute the minimum-image distance between two atoms under periodic boundary con
 - Implements the minimum-image convention in fractional coordinates.
 - Supports input coordinates in either Cartesian or fractional form.
 """
-
 function d_pbc(atom1::AbstractVector{<:Real},
                         atom2::AbstractVector{<:Real},
                         lattice::AbstractMatrix{<:Real};
@@ -241,8 +238,6 @@ A small tolerance (`eps(Float32)`) is used to avoid numerical issues when `Rij` 
 
 
 """
-
-
 function fc(
     Rij::Float32, Rc::Float32
     ) 
@@ -308,7 +303,6 @@ Return the energies of a batch of samples.
 - The function extracts only the first element of each sample's `energy` field.
 - Output is always of type `Float32`.
 """
-
 function extract_energies(X::Vector{Sample})
     n_batch = size(X, 1)
 
@@ -346,8 +340,6 @@ Extract and reshape atomic force vectors from a batch of samples.
 - Assumes all samples have the same number of atoms.
 - Forces are extracted directly from the `forces` field of each sample.
 """
-
-
 function extract_forces(y::Vector{Sample}; ndims::Int=3)
  
     n_batch = size(y , 1)

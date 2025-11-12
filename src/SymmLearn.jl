@@ -9,15 +9,15 @@ using ExtXYZ
 using Enzyme
 
 
-include("Data_prep.jl")
+include("Machine_Learning/Data_prep.jl")
 include("Utils.jl")
-include("Train.jl")
-include("Model.jl")
-include("Loss.jl")
+include("Machine_Learning/Train.jl")
+include("Machine_Learning/Model.jl")
+include("Machine_Learning/Loss.jl")
 
 
 export xyz_to_nn_input
-export create_model,train_model!, build_species_models
-export dispatch,predict_forces
+export train_model!, build_species_models
+export dispatch,predict_forces,loss
 
 end

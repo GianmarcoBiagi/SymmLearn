@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Examples · SymmLearn.jl</title><meta name="title" content="Examples · SymmLearn.jl"/><meta property="og:title" content="Examples · SymmLearn.jl"/><meta property="twitter:title" content="Examples · SymmLearn.jl"/><meta name="description" content="Documentation for SymmLearn.jl."/><meta property="og:description" content="Documentation for SymmLearn.jl."/><meta property="twitter:description" content="Documentation for SymmLearn.jl."/><meta property="og:url" content="https://github.com/GianmarcoBiagi/SymmLearn/examples/"/><meta property="twitter:url" content="https://github.com/GianmarcoBiagi/SymmLearn/examples/"/><link rel="canonical" href="https://github.com/GianmarcoBiagi/SymmLearn/examples/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/style.css" rel="stylesheet" type="text/css"/></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">SymmLearn.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../installation/">Installation</a></li><li><a class="tocitem" href="../usage/">Usage</a></li><li class="is-active"><a class="tocitem" href>Examples</a><ul class="internal"><li><a class="tocitem" href="#Predicting-the-Lennard-Jones-potential-betwenn-two-Helium-atoms"><span>Predicting the Lennard-Jones potential betwenn two Helium atoms</span></a></li><li><a class="tocitem" href="#Molecular-Dynamics-using-the-Molly-Interface-(TODO)"><span>Molecular Dynamics using the Molly Interface (TODO)</span></a></li></ul></li><li><a class="tocitem" href="../api/">API</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Examples</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Examples</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/GianmarcoBiagi/SymmLearn" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Examples"><a class="docs-heading-anchor" href="#Examples">Examples</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h1><pre><code class="language-julia hljs"></code></pre><h2 id="Predicting-the-Lennard-Jones-potential-betwenn-two-Helium-atoms"><a class="docs-heading-anchor" href="#Predicting-the-Lennard-Jones-potential-betwenn-two-Helium-atoms">Predicting the Lennard-Jones potential betwenn two Helium atoms</a><a id="Predicting-the-Lennard-Jones-potential-betwenn-two-Helium-atoms-1"></a><a class="docs-heading-anchor-permalink" href="#Predicting-the-Lennard-Jones-potential-betwenn-two-Helium-atoms" title="Permalink"></a></h2><p>This is a simple example showing how to use this package to train a machine learning force field using your data.</p><p>In this example, we will study a system of two helium atoms interacting through a Lennard-Jones potential. The example is divided into two main sections:</p><ol><li><p>Model Setup and Training:  We will load a pre-generated dataset containing configurations of two helium atoms in a simulation box and use the SymmLearn functions to build and train our neural network model.</p></li><li><p>Results and Comparison:  Then, we will analyze the results. For this simple case, it is possible to visualize the trained force field and compare it to the reference Lennard-Jones potential.</p></li></ol><pre><code class="language-julia hljs">using Symmlearn
+using Plots
+using Random
+</code></pre><p>The loading process of the .xyz dataset con be done as illustrated here in the next code block.</p><p>Everything is fuly explained in the documentation, it&#39;s important to mention that the target data is stored in a Vector of Sample structs, containing both the sample energy and the forces</p><p>This dataset consists in 1000 samples, for each the energy was computed using a Lennard-Jones potential with <span>$\sigma$</span> = 1 and <span>$\epsilon$</span> = 1.</p><p>For each sample the distance between the two Helium atoms was randomly generated between 0.95 <span>$\sigma$</span> and 2.5 <span>$\sigma$</span>, one atom is in the origin the other is on the x axis</p><pre><code class="language-julia hljs">file_path = &quot;helium_LJ_dataset.xyz&quot;
+
+x_train, y_train, x_val, y_val, x_test, y_test, e_mean,e_std, unique_species, species_idx, _= 
+    xyz_to_nn_input(file_path)</code></pre><p>The xyz<em>to</em>nn_input function returns the data already split in test, train and validation, the mean and the standard deviation of the energies  to renormalize them later and the lattice parameters, used by the model to compute the atomic distances with periodic boundary conditions ( in this example we won&#39;t be using PBC as the helium atoms are confined in a box )</p><p>In the next block we will build the model and check how to compute all the useful objects</p><pre><code class="language-julia hljs">N_G1 = 5 #define the model using 10 G1 symmetry functions
+r_cutoff = 2.75f0
+
+#we set the random seed for reproducibility 
+
+seed = 42
+Random.seed!(seed)   
+
+#we use depth = 1, a branch with a small number of parameters, enough for this task
+model = build_species_models(unique_species, species_idx, N_G1, r_cutoff , depth = 1 , seed = seed) 
+
+#We can check if the model and the loss work as we expected on a small batch 
+
+x_batch = x_train[1:3, :]
+y_batch = y_train[1:3]</code></pre><p>Now we can train the model</p><pre><code class="language-julia hljs">#we use both forces and energies to train the model  
+ 
+
+ trained_model, train_loss, val_loss = train_model!(
+        model,
+        x_train, y_train,
+        x_val, y_val;
+         forces = false,  epochs = 500 , initial_lr = 1e-3 )
+</code></pre><p>Our model has been trained, we can look at the results</p><p>This first plot compares the energy of each pair as a function of the distance between the two atoms with the LJ potential for the test set</p><pre><code class="language-julia hljs"># Denormalize model predictions for the test set using Z-score inversion
+test_guess = dispatch(x_test, trained_model) .* e_std .+ e_mean
+# Extract interatomic distances from the test set (for plotting)
+r_ij = [only(x_test[i][1].coord[1]) for i in 1:size(x_test, 1)]
+
+#We can also make the data for the reference plot
+
+f_lj(x) = 4*(1/x^(12) - 1/x^(6))
+
+x = 0.95:0.01:2.6
+y = f_lj.(x)
+
+
+plot(x, y,
+    label=&quot;Lennard-Jones Potential&quot;,
+    color=&quot;black&quot;,
+    lw=2
+)
+
+# Plot predictions vs Lennard-Jones potential
+scatter!(r_ij, test_guess,
+    label=&quot;Model prediction (Test Set)&quot;,
+    alpha=0.5,
+    color=&quot;cyan&quot;
+)
+
+
+
+xlabel!(&quot;Distance [σ]&quot;)
+ylabel!(&quot;Energy [ϵ]&quot;)
+title!(&quot;Helium energy prediction - Test Set&quot;)</code></pre><p><img src="../images/LJ_energy-1.png" alt="LJ energy prediction"/></p><p>As expected the model managed to reproduce very well the Lennard Jones potential</p><p>It&#39;s possible to do an analogous analysis to see how well the model predicts the forces</p><pre><code class="language-julia hljs"># first we compute the forces using the model
+
+f_guess = predict_forces(x_test, trained_model)
+
+#then we extract the x axis forces applied to atom 1 and to atom 2
+#f_guess in an object with dimensions ( batch , atom , [F_x , F_y , F_z])
+
+f_guess_1 = f_guess[ : , 1 , 1] #we only care about the forces on the x axis
+
+f_guess_2 = f_guess[ : , 2 , 1]
+
+#this is the analytical formula for the forces applied to atom 1
+#the forces on atom 2 will just be -F(x)
+
+F(x) = 24 * (2/x^13 - 1/x^7)
+
+x = 0.95:0.01:2.6
+y_1 = F.(x)
+y_2 = - F.(x)
+
+
+
+# ---- Plot ----
+
+# Model predictions
+plot(x, y_1,
+    label=&quot;Real forces - Atom 1 &quot;,
+    color=&quot;red&quot;,
+    linestyle =:dash,
+    lw = 2
+)
+
+plot!(x, y_2,
+    label=&quot;Real forces - Atom 2 &quot;,
+    color=&quot;blue&quot;,
+    linestyle =:dash,
+    lw = 2
+)
+
+  scatter!(r_ij , f_guess_1,
+    label=&quot;Guess - Atom 1&quot;,
+    color=&quot;orange&quot;,
+    alpha = 0.5
+)
+
+  scatter!(r_ij , f_guess_2,
+    label=&quot;Guess - Atom 2&quot;,
+    color=&quot;cyan&quot;,
+    alpha = 0.5
+)
+
+
+# Labels
+ylabel!(&quot;Force [ϵ ÷ σ]&quot;)
+xlabel!(&quot;Distance between atoms [σ]&quot;)
+title!(&quot;Force plot - Test Set&quot;)
+ylims!(minimum(y_2)*1.01 , maximum(y_1)*1.01)</code></pre><p><img src="../images/LJ_force-1.png" alt="LJ forces prediction"/></p><p>Also the forces are well reproduced by the model</p><p>A more quantitative analysis can be done by computing the rmse per atom for both the forces and the energies, that&#39;s what we will do in this next and last block</p><pre><code class="language-julia hljs"># ---- Energies ----
+e_test = extract_energies(y_test) .* e_std .+ e_mean
+n_atoms = 2
+rmse_total_e = sqrt(mean((test_guess .- e_test).^2))
+rmse_per_atom = rmse_total_e / n_atoms
+
+
+p1 = scatter(test_guess , e_test,
+    label=&quot;Correlation plot&quot;,
+    color=&quot;blue&quot;,
+    alpha = 0.7,
+    xlabel = &quot;Predicted energy [ϵ]&quot;,
+    ylabel = &quot;Real energy [ϵ]&quot;,
+    title = &quot;Energy correlation plot&quot;
+)
+plot!(p1, e_test, e_test,
+    label=&quot;reference line&quot;,
+    color=&quot;black&quot;,
+    style=:dash
+)
+
+display(p1)
+
+
+
+# ---- Forces ----
+#the flat = true option is useful only when making plots like this one
+#looking at the data in this form is not suggested
+
+f_test = extract_forces(y_test , ndims = 1 ) 
+#always remember that to preserve the physical relation the forces are also normalized using e_std
+f_guess = predict_forces(x_test, trained_model ; flat = true  ) / e_std 
+rmse_f = sqrt(mean((f_guess .- f_test).^2)) / n_atoms
+println(&quot;Force RMSE per atom = $(round(rmse_f, digits=4)) ϵ/σ&quot;)
+
+p2 = scatter(f_guess , f_test,
+    label=&quot;Correlation plot&quot;,
+    color=&quot;blue&quot;,
+    alpha = 0.7,
+    xlabel = &quot;Predicted force [ϵ/σ]&quot;,
+    ylabel = &quot;Real force [ϵ/σ]&quot;,
+    title = &quot;Force correlation plot&quot;
+)
+plot!(p2, f_test, f_test,
+    label=&quot;reference line&quot;,
+    color=&quot;black&quot;,
+    style=:dash
+)
+
+display(p2)</code></pre><p><img src="../images/corr_e-1.png" alt="Energy correlation plot"/></p><p><img src="../images/corr_f-1.png" alt="Force correlation plot"/></p><h2 id="Molecular-Dynamics-using-the-Molly-Interface-(TODO)"><a class="docs-heading-anchor" href="#Molecular-Dynamics-using-the-Molly-Interface-(TODO)">Molecular Dynamics using the Molly Interface (TODO)</a><a id="Molecular-Dynamics-using-the-Molly-Interface-(TODO)-1"></a><a class="docs-heading-anchor-permalink" href="#Molecular-Dynamics-using-the-Molly-Interface-(TODO)" title="Permalink"></a></h2></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../usage/">« Usage</a><a class="docs-footer-nextpage" href="../api/">API »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.15.0 on <span class="colophon-date" title="Wednesday 12 November 2025 05:47">Wednesday 12 November 2025</span>. Using Julia version 1.10.2.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

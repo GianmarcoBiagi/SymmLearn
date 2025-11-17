@@ -5,6 +5,8 @@ include("tests/test_fc.jl")
 include("tests/test_extract.jl")
 include("tests/test_g1layer.jl")
 include("tests/test_workflow.jl")
+include("tests/test_dist.jl")
+include("tests/test_dist_derivatives.jl")
 
 # ---- Fixtures / Setup ----
 function prepare_test_data()
@@ -39,6 +41,65 @@ function prepare_test_data()
 end
 
 
+"""
+SymmLearn expected user workflow tests
+- **test_data_extraction()** – Verifies that `extract_data` correctly parses input files and produces consistent, non-empty data structures.  
+- **test_nn_preparation()** – Checks that `prepare_nn_data` generates valid neural network inputs and forces for each atom.  
+- **test_data_preprocessing()** – Ensures that `data_preprocess` properly splits and structures datasets for training and validation.  
+- **test_model_construction()** – Confirms that `build_species_models` constructs models for all unique species without errors.  
+- **test_distance_and_forces()** – Validates the consistency of `distance_layer`, `distance_derivatives`, `extract_energies`, and `extract_forces` in terms of output shapes and dimensions.  
+- **test_training_updates()** – Ensures that training (`dispatch_train` + loss computation) updates model parameters, demonstrating that learning occurs."""
+
+@testset "SymmLearn expected user workflow tests" begin
+    test_data_extraction()
+    test_nn_preparation()
+    test_data_preprocessing()
+    test_model_construction()
+    test_distance_and_forces()
+    test_training_updates()
+end
+
+"""
+d_pbc tests
+- **test_minimum_image_cubic()** – Checks that the minimum image distance in a cubic periodic cell is correctly computed.  
+- **test_fractional_cartesian_consistency()** – Verifies consistency between fractional and Cartesian coordinates for PBC distance calculations.  
+- **test_return_image_vector()** – Ensures the function correctly returns the minimal image vector, relative coordinates, and translation indices."""
+
+@testset "d_pbc tests" begin
+    test_minimum_image_cubic()
+    test_fractional_cartesian_consistency()
+    test_return_image_vector()
+end
+
+"""
+fc tests
+- **test_fc_cutoff_zero()** – Confirms that `fc` returns zero when beyond the cutoff.  
+- **test_fc_smooth_interior()** – Checks that `fc` produces deterministic and correct values inside the cutoff.  
+- **test_fc_near_rc_guard()** – Ensures the EPS guard prevents divergence when `Rij` approaches the cutoff radius."""
+
+@testset "fc tests" begin
+    test_fc_cutoff_zero()
+    test_fc_smooth_interior()
+    test_fc_near_rc_guard()
+end
+
+"""
+extract_* tests
+- **test_extract_energy_single()** – Verifies that the energy extracted from a single sample matches the stored value.  
+- **test_extract_forces_single()** – Confirms that the forces extracted from a single sample match the stored forces.  
+- **test_extract_forces_ndims()** – Checks that batch force extraction respects the desired shape according to the number of dimensions specified (1D, 2D, 3D)."""
+
+@testset "extract_* tests" begin
+    test_extract_energy_single()
+    test_extract_forces_single()
+    test_extract_forces_ndims()
+end
+
+"""
+G1Layer tests
+- **test_g1layer_initialization()** – Verifies deterministic layer initialization with a fixed random seed.  
+- **test_g1layer_forward_pass()** – Confirms that the forward pass produces outputs with correct dimensions and deterministic results for identical inputs.  
+- **test_g1layer_positive_output()** – Ensures that small positive inputs produce strictly positive outputs."""
 
 @testset "G1Layer tests" begin
     test_g1layer_initialization()
@@ -46,6 +107,28 @@ end
     test_g1layer_positive_output()
 end
 
+"""
+distance_layer Tests
+- **test_distance_layer_single()** – Verifies that `distance_layer` correctly computes pairwise Euclidean distances for a single atomic configuration. Checks that distances are symmetric, non-negative, and that the output is a `Vector{G1Input}` with the expected shape.
+- **test_distance_layer_batch()** – Confirms that `distance_layer` computes distances correctly for a batch of atomic configurations with two atoms each. Validates output shape (`Matrix{G1Input}`), symmetry of distances, non-negativity, and correct minimal-image distances when a lattice is provided.
+- **test_distance_layer_batch_multiple_atoms()** – Ensures that `distance_layer` correctly handles batches with more than two atoms. Verifies that all distance vectors have length `N_atoms-1`, distances are positive, and the symmetry property `dist(i,j) = dist(j,i)` is satisfied across the batch.
+"""
 
+@testset "distance_layer tests" begin
+    test_distance_layer_single()
+    test_distance_layer_batch()
+    test_distance_layer_batch_multiple_atoms()
+end
 
+"""
+distance_derivatives Tests
+- **test_distance_derivatives_single()** – Checks derivatives for a single configuration: correct shape, symmetry, and direction.  
+- **test_distance_derivatives_batch()** – Checks derivatives for a batch: correct tensor shape, symmetry, and optional lattice handling.  
+- **test_distance_derivatives_zero_distance()** – Ensures zero derivatives when atoms coincide.
+"""
 
+@testset "distance_derivatives tests" begin
+    test_distance_derivatives_single()
+    test_distance_derivatives_batch()
+    test_distance_derivatives_zero_distance()
+end

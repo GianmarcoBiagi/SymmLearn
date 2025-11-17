@@ -689,6 +689,25 @@ function dispatch(atoms, species_models::Vector{Chain}; lattice::Union{Nothing, 
     return output
 end
 
+"""
+    predict_forces(x, model; flat::Bool = false)
+
+Computes per-atom force vectors for a batch of atomic structures using a trained neural network model.  
+Transforms coordinates into distance representations, evaluates model gradients, and assembles  
+3-component force vectors for each atom in each structure.
+
+# Arguments
+- `x`: Batched atomic structures, formatted for `distance_layer` and `distance_derivatives`.  
+- `model`: Trained neural network model compatible with `calculate_force`.  
+- `flat::Bool`: If `false`, returns a 3D array `(n_batches, n_atoms, 3)`;  
+  if `true`, returns a 2D array `(n_batches*n_atoms, 3)`.
+
+# Returns
+- `predicted_forces`: Either a 3D tensor of per-atom forces  
+  or a flattened 2D array when `flat = true`.
+
+
+"""
 
 
 function predict_forces(x, model; flat=false)
@@ -785,3 +804,4 @@ function predict_forces(x, model; flat=false)
         return predicted_forces
     end
 end
+

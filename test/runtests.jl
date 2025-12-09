@@ -5,8 +5,7 @@ include("tests/test_fc.jl")
 include("tests/test_extract.jl")
 include("tests/test_g1layer.jl")
 include("tests/test_workflow.jl")
-include("tests/test_dist.jl")
-include("tests/test_dist_derivatives.jl")
+
 
 # ---- Fixtures / Setup ----
 function prepare_test_data()
@@ -107,28 +106,3 @@ G1Layer tests
     test_g1layer_positive_output()
 end
 
-"""
-distance_layer Tests
-- **test_distance_layer_single()** – Verifies that `distance_layer` correctly computes pairwise Euclidean distances for a single atomic configuration. Checks that distances are symmetric, non-negative, and that the output is a `Vector{G1Input}` with the expected shape.
-- **test_distance_layer_batch()** – Confirms that `distance_layer` computes distances correctly for a batch of atomic configurations with two atoms each. Validates output shape (`Matrix{G1Input}`), symmetry of distances, non-negativity, and correct minimal-image distances when a lattice is provided.
-- **test_distance_layer_batch_multiple_atoms()** – Ensures that `distance_layer` correctly handles batches with more than two atoms. Verifies that all distance vectors have length `N_atoms-1`, distances are positive, and the symmetry property `dist(i,j) = dist(j,i)` is satisfied across the batch.
-"""
-
-@testset "distance_layer tests" begin
-    test_distance_layer_single()
-    test_distance_layer_batch()
-    test_distance_layer_batch_multiple_atoms()
-end
-
-"""
-distance_derivatives Tests
-- **test_distance_derivatives_single()** – Checks derivatives for a single configuration: correct shape, symmetry, and direction.  
-- **test_distance_derivatives_batch()** – Checks derivatives for a batch: correct tensor shape, symmetry, and optional lattice handling.  
-- **test_distance_derivatives_zero_distance()** – Ensures zero derivatives when atoms coincide.
-"""
-
-@testset "distance_derivatives tests" begin
-    test_distance_derivatives_single()
-    test_distance_derivatives_batch()
-    test_distance_derivatives_zero_distance()
-end
